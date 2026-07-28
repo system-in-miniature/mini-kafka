@@ -66,3 +66,11 @@ class NotPartitionOwner(MiniKafkaError):
 
 class UnknownMember(MiniKafkaError):
     code = "UNKNOWN_MEMBER"
+
+
+class NotEnoughReplicas(MiniKafkaError):
+    code = "NOT_ENOUGH_REPLICAS"
+
+
+class NotEnoughReplicasAfterAppend(MiniKafkaError):
+    code = "NOT_ENOUGH_REPLICAS_AFTER_APPEND"

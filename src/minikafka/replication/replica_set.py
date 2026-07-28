@@ -1,14 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 
 from minikafka.clock import Clock
 from minikafka.config import MiniKafkaConfig
 from minikafka.core.batch import RecordBatch
 from minikafka.core.metadata import PartitionMetadata, TopicPartition
 from minikafka.core.record import LogRecord
+from minikafka.errors import (
+    NotEnoughReplicas,
+    NotEnoughReplicasAfterAppend,
+)
 from minikafka.replication.model import AckMode, IsolationLevel, ProduceResult
 from minikafka.replication.replica import Replica
+
+
+@dataclass(slots=True)
+class AckWaiter:
+    target_offset: int
+    acknowledgement_set: frozenset[int]
+    result: ProduceResult
+    future: asyncio.Future[ProduceResult]
 
 
 class PartitionReplicaSet:
@@ -37,6 +50,7 @@ class PartitionReplicaSet:
             replica.in_sync = broker_id in self._isr
         self.high_watermark = min(replica.leo for replica in replicas.values())
         self._lock = asyncio.Lock()
+        self._ack_waiters: list[AckWaiter] = []
 
     @property
     def leader(self) -> Replica:
@@ -64,10 +78,19 @@ class PartitionReplicaSet:
         acks: AckMode | str | int = AckMode.LEADER,
     ) -> ProduceResult:
         mode = AckMode.parse(acks)
+        waiter: AckWaiter | None = None
         async with self._lock:
+            if (
+                mode is AckMode.ALL
+                and len(self._isr) < self.config.min_insync_replicas
+            ):
+                raise NotEnoughReplicas(
+                    f"ISR size {len(self._isr)} is below "
+                    f"{self.config.min_insync_replicas}"
+                )
             located = self.leader.log.append(batch)
             self._advance_high_watermark()
-            return ProduceResult(
+            result = ProduceResult(
                 batch=located.batch,
                 base_offset=(
                     located.batch.base_offset
@@ -77,6 +100,20 @@ class PartitionReplicaSet:
                 next_offset=located.batch.next_offset,
                 offsets_known=mode is not AckMode.NONE,
             )
+            if mode is AckMode.ALL:
+                waiter = AckWaiter(
+                    target_offset=located.batch.next_offset,
+                    acknowledgement_set=frozenset(self._isr),
+                    result=result,
+                    future=asyncio.get_running_loop().create_future(),
+                )
+                self._ack_waiters.append(waiter)
+                self._resolve_ack_waiters()
+            else:
+                return result
+        if waiter is None:
+            raise RuntimeError("acks=all did not create a waiter")
+        return await waiter.future
 
     async def fetch_followers_once(self) -> None:
         async with self._lock:
@@ -122,6 +159,27 @@ class PartitionReplicaSet:
             self.replicas[broker_id].leo for broker_id in self._isr
         )
         self.high_watermark = max(self.high_watermark, candidate)
+        self._resolve_ack_waiters()
+
+    def _resolve_ack_waiters(self) -> None:
+        for waiter in self._ack_waiters:
+            if waiter.future.done():
+                continue
+            if len(self._isr) < self.config.min_insync_replicas:
+                waiter.future.set_exception(
+                    NotEnoughReplicasAfterAppend(
+                        "ISR fell below min.insync.replicas after append"
+                    )
+                )
+                continue
+            if all(
+                self.replicas[broker_id].leo >= waiter.target_offset
+                for broker_id in waiter.acknowledgement_set
+            ):
+                waiter.future.set_result(waiter.result)
+        self._ack_waiters = [
+            waiter for waiter in self._ack_waiters if not waiter.future.done()
+        ]
 
     async def fetch(
         self,

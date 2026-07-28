@@ -18,8 +18,8 @@ from minikafka.replication.model import AckMode
 class RecordMetadata:
     topic: str
     partition: int
-    offset: int
-    base_offset: int
+    offset: int | None
+    base_offset: int | None
     timestamp_ms: int
 
 
@@ -103,16 +103,18 @@ class Producer:
                 if not item.future.done():
                     item.future.set_exception(error)
             return
-        if appended.batch.base_offset is None:
-            raise RuntimeError("leader appended an unassigned batch")
         for delta, item in enumerate(pending):
             if not item.future.done():
                 item.future.set_result(
                     RecordMetadata(
                         topic=tp.topic,
                         partition=tp.partition,
-                        offset=appended.batch.base_offset + delta,
-                        base_offset=appended.batch.base_offset,
+                        offset=(
+                            None
+                            if appended.base_offset is None
+                            else appended.base_offset + delta
+                        ),
+                        base_offset=appended.base_offset,
                         timestamp_ms=item.record.timestamp_ms,
                     )
                 )
