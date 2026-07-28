@@ -23,3 +23,7 @@ class InvalidRecord(MiniKafkaError):
 
 class CorruptBatch(MiniKafkaError):
     code = "CORRUPT_BATCH"
+
+
+class CorruptIndex(MiniKafkaError):
+    code = "CORRUPT_INDEX"
