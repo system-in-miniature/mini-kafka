@@ -95,3 +95,11 @@ class OutOfOrderSequence(MiniKafkaError):
         super().__init__(f"expected sequence {expected}, got {actual}")
         self.expected = expected
         self.actual = actual
+
+
+class InvalidRequest(MiniKafkaError):
+    code = "INVALID_REQUEST"
+
+
+class FrameTooLarge(MiniKafkaError):
+    code = "FRAME_TOO_LARGE"
