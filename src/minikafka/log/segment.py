@@ -178,6 +178,15 @@ class Segment:
     def has_data(self) -> bool:
         return self.leo > self.base_offset
 
+    @property
+    def total_size_bytes(self) -> int:
+        index_size = (
+            self.index_path.stat().st_size
+            if self.index_path.exists()
+            else 0
+        )
+        return self.size_bytes + index_size
+
     def append(self, batch: RecordBatch) -> BatchLocation:
         if batch.base_offset != self.leo:
             raise InvalidRecord(

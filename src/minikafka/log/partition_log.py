@@ -99,10 +99,7 @@ class PartitionLog:
 
     @property
     def size_bytes(self) -> int:
-        return sum(
-            segment.size_bytes + segment.index_path.stat().st_size
-            for segment in self._segments
-        )
+        return sum(segment.total_size_bytes for segment in self._segments)
 
     def append(self, batch: RecordBatch) -> LocatedBatch:
         assigned = batch.assign(self.leo, self.leader_epoch)
@@ -234,6 +231,36 @@ class PartitionLog:
             segment.close()
         for path in paths:
             path.unlink(missing_ok=True)
+
+    def delete_closed_segments(
+        self,
+        base_offsets: list[int] | tuple[int, ...],
+    ) -> tuple[int, ...]:
+        requested = set(base_offsets)
+        closed = {segment.base_offset for segment in self.closed_segments}
+        unknown = requested.difference(closed)
+        if unknown:
+            raise ValueError(
+                f"retention can delete closed segments only: {sorted(unknown)}"
+            )
+        if not requested:
+            return ()
+        removed = [
+            segment
+            for segment in self._segments[:-1]
+            if segment.base_offset in requested
+        ]
+        self._segments = [
+            segment
+            for segment in self._segments
+            if segment.base_offset not in requested
+        ]
+        for segment in removed:
+            paths = (segment.log_path, segment.index_path)
+            segment.close()
+            for path in paths:
+                path.unlink(missing_ok=True)
+        return tuple(sorted(requested))
 
     def flush(self) -> None:
         for segment in self._segments:
