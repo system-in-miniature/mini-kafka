@@ -158,3 +158,21 @@ class Producer:
             return
         await self.flush()
         self._closed = True
+
+    async def crash(self) -> None:
+        if self._closed:
+            return
+        for task in self._tasks:
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        for tp in self.accumulator.partitions():
+            for pending in self.accumulator.pop(tp):
+                if not pending.future.done():
+                    pending.future.cancel()
+        self._tasks.clear()
+        self._closed = True
+
+    @property
+    def owned_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        return tuple(task for task in self._tasks if not task.done())

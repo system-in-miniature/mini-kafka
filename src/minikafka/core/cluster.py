@@ -23,6 +23,7 @@ from minikafka.errors import (
     UnknownPartition,
     UnknownTopic,
 )
+from minikafka.lifecycle import FailureInjector, LifecycleState
 from minikafka.log.partition_log import PartitionLog
 from minikafka.log.segment import LocatedBatch
 from minikafka.producer.producer import Producer
@@ -68,6 +69,9 @@ class BrokerCluster:
             self,
             TransactionJournal(config.data_dir / "transactions.journal"),
         )
+        self.state = LifecycleState.RUNNING
+        self.failure_injector = FailureInjector()
+        self._terminal_error: BaseException | None = None
         self._closed = False
 
     @classmethod
@@ -383,6 +387,7 @@ class BrokerCluster:
     async def close(self) -> None:
         if self._closed:
             return
+        self.state = LifecycleState.CLOSING
         for producer in tuple(self._producers):
             await producer.close()
         for consumer in tuple(self._consumers):
@@ -392,7 +397,42 @@ class BrokerCluster:
             log.flush()
             log.close()
         self._closed = True
+        self.state = LifecycleState.CLOSED
+
+    async def crash(self) -> None:
+        if self._closed:
+            return
+        for producer in tuple(self._producers):
+            await producer.crash()
+        for consumer in tuple(self._consumers):
+            await consumer.close()
+        for log in self._logs.values():
+            log.close()
+        self._closed = True
+        self.state = LifecycleState.CLOSED
+
+    async def run_flush_cycle(self) -> None:
+        self._ensure_open()
+        try:
+            self.failure_injector.before_flush()
+            for log in self._logs.values():
+                log.flush()
+            self.offsets.flush()
+        except BaseException as error:
+            self._terminal_error = error
+            self.state = LifecycleState.FAILED
+            raise
+
+    @property
+    def owned_tasks(self) -> tuple[object, ...]:
+        return tuple(
+            task
+            for producer in self._producers
+            for task in producer.owned_tasks
+        )
 
     def _ensure_open(self) -> None:
+        if self._terminal_error is not None:
+            raise self._terminal_error
         if self._closed:
             raise RuntimeError("cluster is closed")
