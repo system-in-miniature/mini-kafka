@@ -199,7 +199,8 @@ class PartitionReplicaSet:
                 now - follower.last_fetch_ms
                 <= self.config.replica_lag_time_ms
             )
-            if within_offset and within_time:
+            has_committed_prefix = follower.leo >= self.high_watermark
+            if within_offset and within_time and has_committed_prefix:
                 next_isr.add(follower.broker_id)
         self._isr = next_isr
         for broker_id, replica in self.replicas.items():

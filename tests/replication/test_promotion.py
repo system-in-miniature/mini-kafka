@@ -30,6 +30,32 @@ async def test_only_isr_replica_can_be_promoted(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_replica_behind_high_watermark_cannot_reenter_isr(
+    tmp_path: Path,
+) -> None:
+    config = MiniKafkaConfig(
+        data_dir=tmp_path,
+        broker_ids=(1, 2),
+        replica_lag_max_offsets=10,
+    )
+    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+        await cluster.create_topic("events", 1, 2)
+        tp = TopicPartition("events", 0)
+        replica_set = cluster.replica_set(tp)
+        await replica_set.append(batch(b"committed"), AckMode.LEADER)
+        await replica_set.fetch_followers_once()
+        assert replica_set.high_watermark == 1
+        replica_set.remove_from_isr(2)
+        replica_set.replicas[2].log.truncate_to(0)
+
+        replica_set.refresh_isr()
+
+        assert 2 not in replica_set.isr
+        with pytest.raises(NotInSyncReplica):
+            await cluster.promote(tp, broker_id=2)
+
+
+@pytest.mark.asyncio
 async def test_promotion_increments_epoch_and_fences_old_requests(
     tmp_path: Path,
 ) -> None:
