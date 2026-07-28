@@ -15,3 +15,11 @@ class OffsetOutOfRange(MiniKafkaError):
         self.requested = requested
         self.start = start
         self.end = end
+
+
+class InvalidRecord(MiniKafkaError):
+    code = "INVALID_RECORD"
+
+
+class CorruptBatch(MiniKafkaError):
+    code = "CORRUPT_BATCH"

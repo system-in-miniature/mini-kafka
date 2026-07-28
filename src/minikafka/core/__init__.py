@@ -1,0 +1,1 @@
+"""Core MiniKafka domain values."""
