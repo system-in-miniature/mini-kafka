@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Self
 
+from minikafka.clock import Clock, SystemClock
 from minikafka.config import MiniKafkaConfig
+from minikafka.core.batch import RecordBatch
 from minikafka.core.metadata import (
     MetadataStore,
     PartitionMetadata,
@@ -17,6 +19,8 @@ from minikafka.errors import (
     UnknownTopic,
 )
 from minikafka.log.partition_log import PartitionLog
+from minikafka.log.segment import LocatedBatch
+from minikafka.producer.producer import Producer
 
 
 class BrokerCluster:
@@ -26,15 +30,23 @@ class BrokerCluster:
         metadata_store: MetadataStore,
         topics: dict[str, TopicMetadata],
         logs: dict[tuple[TopicPartition, int], PartitionLog],
+        clock: Clock,
     ) -> None:
         self.config = config
         self._metadata_store = metadata_store
         self._topics = topics
         self._logs = logs
+        self.clock = clock
+        self._producers: set[Producer] = set()
         self._closed = False
 
     @classmethod
-    def open(cls, config: MiniKafkaConfig) -> BrokerCluster:
+    def open(
+        cls,
+        config: MiniKafkaConfig,
+        *,
+        clock: Clock | None = None,
+    ) -> BrokerCluster:
         metadata_store = MetadataStore(config.data_dir / "metadata.json")
         topics = metadata_store.load()
         logs: dict[tuple[TopicPartition, int], PartitionLog] = {}
@@ -54,7 +66,13 @@ class BrokerCluster:
             for log in logs.values():
                 log.close()
             raise
-        return cls(config, metadata_store, topics, logs)
+        return cls(
+            config,
+            metadata_store,
+            topics,
+            logs,
+            SystemClock() if clock is None else clock,
+        )
 
     async def __aenter__(self) -> Self:
         return self
@@ -143,9 +161,40 @@ class BrokerCluster:
         metadata = self.partition_metadata(tp)
         return self.replica_log(tp, metadata.leader_id)
 
+    async def append_leader_batch(
+        self,
+        tp: TopicPartition,
+        batch: RecordBatch,
+    ) -> LocatedBatch:
+        self._ensure_open()
+        return self.leader_log(tp).append(batch)
+
+    def producer(
+        self,
+        *,
+        batch_size: int = 16_384,
+        linger_ms: int = 0,
+        max_buffer_bytes: int = 1_048_576,
+    ) -> Producer:
+        self._ensure_open()
+        producer = Producer(
+            self,
+            self.clock,
+            batch_size=batch_size,
+            linger_ms=linger_ms,
+            max_buffer_bytes=max_buffer_bytes,
+        )
+        self._producers.add(producer)
+        return producer
+
+    def debug_batch_count(self, tp: TopicPartition) -> int:
+        return len(self.leader_log(tp).all_batches())
+
     async def close(self) -> None:
         if self._closed:
             return
+        for producer in tuple(self._producers):
+            await producer.close()
         for log in self._logs.values():
             log.flush()
             log.close()

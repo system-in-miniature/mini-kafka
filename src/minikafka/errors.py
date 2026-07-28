@@ -43,3 +43,7 @@ class UnknownTopic(MiniKafkaError):
 
 class UnknownPartition(MiniKafkaError):
     code = "UNKNOWN_PARTITION"
+
+
+class ProducerBufferFull(MiniKafkaError):
+    code = "PRODUCER_BUFFER_FULL"
