@@ -31,3 +31,15 @@ class CorruptIndex(MiniKafkaError):
 
 class StorageError(MiniKafkaError):
     code = "STORAGE_ERROR"
+
+
+class TopicAlreadyExists(MiniKafkaError):
+    code = "TOPIC_ALREADY_EXISTS"
+
+
+class UnknownTopic(MiniKafkaError):
+    code = "UNKNOWN_TOPIC"
+
+
+class UnknownPartition(MiniKafkaError):
+    code = "UNKNOWN_PARTITION"
