@@ -74,3 +74,11 @@ class NotEnoughReplicas(MiniKafkaError):
 
 class NotEnoughReplicasAfterAppend(MiniKafkaError):
     code = "NOT_ENOUGH_REPLICAS_AFTER_APPEND"
+
+
+class NotInSyncReplica(MiniKafkaError):
+    code = "NOT_IN_SYNC_REPLICA"
+
+
+class FencedLeaderEpoch(MiniKafkaError):
+    code = "FENCED_LEADER_EPOCH"

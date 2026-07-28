@@ -9,8 +9,10 @@ from minikafka.core.batch import RecordBatch
 from minikafka.core.metadata import PartitionMetadata, TopicPartition
 from minikafka.core.record import LogRecord
 from minikafka.errors import (
+    FencedLeaderEpoch,
     NotEnoughReplicas,
     NotEnoughReplicasAfterAppend,
+    NotInSyncReplica,
 )
 from minikafka.replication.model import AckMode, IsolationLevel, ProduceResult
 from minikafka.replication.replica import Replica
@@ -76,10 +78,17 @@ class PartitionReplicaSet:
         self,
         batch: RecordBatch,
         acks: AckMode | str | int = AckMode.LEADER,
+        *,
+        leader_epoch: int | None = None,
     ) -> ProduceResult:
         mode = AckMode.parse(acks)
         waiter: AckWaiter | None = None
         async with self._lock:
+            if leader_epoch is not None and leader_epoch != self.leader_epoch:
+                raise FencedLeaderEpoch(
+                    f"leader epoch {leader_epoch} does not match "
+                    f"{self.leader_epoch}"
+                )
             if (
                 mode is AckMode.ALL
                 and len(self._isr) < self.config.min_insync_replicas
@@ -118,6 +127,8 @@ class PartitionReplicaSet:
     async def fetch_followers_once(self) -> None:
         async with self._lock:
             for follower in self.followers:
+                if follower.leo > self.leader.leo:
+                    follower.log.truncate_to(self.high_watermark)
                 batches = self.leader.log.read_batches(
                     follower.leo,
                     self.config.replica_fetch_max_bytes,
@@ -126,6 +137,42 @@ class PartitionReplicaSet:
                     follower.log.append_replica_batch(batch)
                 follower.last_fetch_ms = self.clock.now_ms()
             self.refresh_isr()
+
+    async def promote(self, broker_id: int) -> None:
+        async with self._lock:
+            if broker_id not in self._isr:
+                raise NotInSyncReplica(
+                    f"broker {broker_id} is not in the ISR"
+                )
+            safe_end = self.high_watermark
+            promoted = self.replicas[broker_id]
+            if promoted.leo > safe_end:
+                promoted.log.truncate_to(safe_end)
+            self.leader_id = broker_id
+            self.leader_epoch += 1
+            for replica in self.replicas.values():
+                replica.log.leader_epoch = self.leader_epoch
+                replica.in_sync = replica.broker_id == broker_id
+            self._isr = {broker_id}
+            self.high_watermark = safe_end
+            for waiter in self._ack_waiters:
+                if not waiter.future.done():
+                    waiter.future.set_exception(
+                        FencedLeaderEpoch("leader changed before acknowledgement")
+                    )
+            self._ack_waiters.clear()
+
+    async def rejoin(self, broker_id: int) -> None:
+        async with self._lock:
+            if broker_id == self.leader_id:
+                raise ValueError("leader cannot rejoin itself as a follower")
+            replica = self.replicas[broker_id]
+            if replica.leo > self.high_watermark:
+                replica.log.truncate_to(self.high_watermark)
+            replica.log.leader_epoch = self.leader_epoch
+            replica.last_fetch_ms = self.clock.now_ms()
+            replica.in_sync = False
+            self._isr.discard(broker_id)
 
     def refresh_isr(self) -> None:
         now = self.clock.now_ms()

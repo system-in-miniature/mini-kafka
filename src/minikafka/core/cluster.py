@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Self
 
 from minikafka.clock import Clock, SystemClock
@@ -284,6 +285,18 @@ class BrokerCluster:
     def replica_set(self, tp: TopicPartition) -> PartitionReplicaSet:
         self.partition_metadata(tp)
         return self._replica_sets[tp]
+
+    async def promote(self, tp: TopicPartition, broker_id: int) -> None:
+        self._ensure_open()
+        replica_set = self.replica_set(tp)
+        await replica_set.promote(broker_id)
+        topic = self._topics[tp.topic]
+        topic.partitions[tp.partition] = replace(
+            topic.partitions[tp.partition],
+            leader_id=replica_set.leader_id,
+            leader_epoch=replica_set.leader_epoch,
+        )
+        self._metadata_store.save(self._topics)
 
     def _make_replica_set(
         self,

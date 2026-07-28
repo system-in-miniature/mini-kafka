@@ -22,3 +22,8 @@ async def test_acks_one_can_confirm_a_leader_only_tail(tmp_path: Path) -> None:
         assert cluster.replica_log(tp, broker_id=1).leo == 1
         assert cluster.replica_log(tp, broker_id=2).leo == 0
         assert cluster.visible_end(tp) == 0
+
+        await cluster.promote(tp, broker_id=2)
+
+        assert cluster.leader_log(tp).leo == 0
+        assert cluster.fetch(tp, 0, 10) == ()
