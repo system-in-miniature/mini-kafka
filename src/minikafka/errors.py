@@ -82,3 +82,16 @@ class NotInSyncReplica(MiniKafkaError):
 
 class FencedLeaderEpoch(MiniKafkaError):
     code = "FENCED_LEADER_EPOCH"
+
+
+class ProducerFenced(MiniKafkaError):
+    code = "PRODUCER_FENCED"
+
+
+class OutOfOrderSequence(MiniKafkaError):
+    code = "OUT_OF_ORDER_SEQUENCE"
+
+    def __init__(self, expected: int, actual: int) -> None:
+        super().__init__(f"expected sequence {expected}, got {actual}")
+        self.expected = expected
+        self.actual = actual

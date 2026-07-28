@@ -14,6 +14,7 @@ from minikafka.errors import (
     NotEnoughReplicasAfterAppend,
     NotInSyncReplica,
 )
+from minikafka.producer.state import ProducerStateManager
 from minikafka.replication.model import AckMode, IsolationLevel, ProduceResult
 from minikafka.replication.replica import Replica
 
@@ -53,6 +54,7 @@ class PartitionReplicaSet:
         self.high_watermark = min(replica.leo for replica in replicas.values())
         self._lock = asyncio.Lock()
         self._ack_waiters: list[AckWaiter] = []
+        self.producer_state = ProducerStateManager(self.leader.log.all_batches())
 
     @property
     def leader(self) -> Replica:
@@ -89,6 +91,9 @@ class PartitionReplicaSet:
                     f"leader epoch {leader_epoch} does not match "
                     f"{self.leader_epoch}"
                 )
+            duplicate = self.producer_state.validate(batch)
+            if duplicate is not None:
+                return duplicate
             if (
                 mode is AckMode.ALL
                 and len(self._isr) < self.config.min_insync_replicas
@@ -98,6 +103,7 @@ class PartitionReplicaSet:
                     f"{self.config.min_insync_replicas}"
                 )
             located = self.leader.log.append(batch)
+            self.producer_state.record(located.batch)
             self._advance_high_watermark()
             result = ProduceResult(
                 batch=located.batch,
@@ -161,6 +167,9 @@ class PartitionReplicaSet:
                         FencedLeaderEpoch("leader changed before acknowledgement")
                     )
             self._ack_waiters.clear()
+            self.producer_state = ProducerStateManager(
+                self.leader.log.all_batches()
+            )
 
     async def rejoin(self, broker_id: int) -> None:
         async with self._lock:
@@ -173,6 +182,9 @@ class PartitionReplicaSet:
             replica.last_fetch_ms = self.clock.now_ms()
             replica.in_sync = False
             self._isr.discard(broker_id)
+
+    def register_producer_epoch(self, producer_id: int, epoch: int) -> None:
+        self.producer_state.register_epoch(producer_id, epoch)
 
     def refresh_isr(self) -> None:
         now = self.clock.now_ms()

@@ -33,11 +33,16 @@ class Producer:
         linger_ms: int,
         max_buffer_bytes: int,
         acks: AckMode | str | int,
+        producer_id: int = -1,
+        producer_epoch: int = -1,
     ) -> None:
         self.cluster = cluster
         self.clock = clock
         self.partitioner = Partitioner()
         self.acks = AckMode.parse(acks)
+        self.producer_id = producer_id
+        self.producer_epoch = producer_epoch
+        self._sequences: dict[TopicPartition, int] = {}
         self.accumulator = BatchAccumulator(
             batch_size=batch_size,
             linger_ms=linger_ms,
@@ -95,6 +100,13 @@ class Producer:
             return
         batch = RecordBatch.unassigned(
             tuple(item.record for item in pending),
+            producer_id=self.producer_id,
+            producer_epoch=self.producer_epoch,
+            base_sequence=(
+                self._sequences.get(tp, 0)
+                if self.producer_id >= 0
+                else -1
+            ),
         )
         try:
             appended = await self.cluster.append_batch(tp, batch, self.acks)
@@ -103,6 +115,8 @@ class Producer:
                 if not item.future.done():
                     item.future.set_exception(error)
             return
+        if self.producer_id >= 0:
+            self._sequences[tp] = batch.last_sequence + 1
         for delta, item in enumerate(pending):
             if not item.future.done():
                 item.future.set_result(

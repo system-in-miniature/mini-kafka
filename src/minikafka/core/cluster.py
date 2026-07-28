@@ -26,6 +26,7 @@ from minikafka.errors import (
 from minikafka.log.partition_log import PartitionLog
 from minikafka.log.segment import LocatedBatch
 from minikafka.producer.producer import Producer
+from minikafka.producer.state import ProducerIdentityStore
 from minikafka.replication.model import AckMode
 from minikafka.replication.replica import Replica
 from minikafka.replication.replica_set import PartitionReplicaSet
@@ -56,6 +57,9 @@ class BrokerCluster:
         self._producers: set[Producer] = set()
         self._consumers: set[Consumer] = set()
         self._next_member_id = 1
+        self._producer_identities = ProducerIdentityStore(
+            config.data_dir / "producer-identities.json"
+        )
         self._replica_sets: dict[TopicPartition, PartitionReplicaSet] = {}
         self._build_replica_sets()
         self._closed = False
@@ -210,8 +214,24 @@ class BrokerCluster:
         linger_ms: int = 0,
         max_buffer_bytes: int = 1_048_576,
         acks: AckMode | str | int = AckMode.LEADER,
+        idempotent: bool = False,
+        transactional_name: str | None = None,
     ) -> Producer:
         self._ensure_open()
+        if idempotent and AckMode.parse(acks) is not AckMode.ALL:
+            if acks == AckMode.LEADER:
+                acks = AckMode.ALL
+            else:
+                raise ValueError("idempotent producer requires acks=all")
+        producer_id, producer_epoch = (-1, -1)
+        if idempotent:
+            name = transactional_name or f"producer-{len(self._producers) + 1}"
+            producer_id, producer_epoch = self._producer_identities.allocate(name)
+            for replica_set in self._replica_sets.values():
+                replica_set.register_producer_epoch(
+                    producer_id,
+                    producer_epoch,
+                )
         producer = Producer(
             self,
             self.clock,
@@ -219,6 +239,8 @@ class BrokerCluster:
             linger_ms=linger_ms,
             max_buffer_bytes=max_buffer_bytes,
             acks=acks,
+            producer_id=producer_id,
+            producer_epoch=producer_epoch,
         )
         self._producers.add(producer)
         return producer
