@@ -112,9 +112,12 @@ class Segment:
                 item = _read_located_batch(log_file, position)
                 if item is None:
                     break
-                if item.batch.base_offset != expected_offset:
+                if (
+                    item.batch.base_offset is None
+                    or item.batch.base_offset < expected_offset
+                ):
                     raise CorruptBatch(
-                        "segment batch offsets are not contiguous"
+                        "segment batch offsets overlap or move backwards"
                     )
                 located.append(item)
                 expected_offset = item.batch.next_offset
@@ -187,8 +190,18 @@ class Segment:
         )
         return self.size_bytes + index_size
 
-    def append(self, batch: RecordBatch) -> BatchLocation:
-        if batch.base_offset != self.leo:
+    def append(
+        self,
+        batch: RecordBatch,
+        *,
+        allow_gap: bool = False,
+    ) -> BatchLocation:
+        invalid_offset = (
+            batch.base_offset is None
+            or batch.base_offset < self.leo
+            or (not allow_gap and batch.base_offset != self.leo)
+        )
+        if invalid_offset:
             raise InvalidRecord(
                 f"expected base offset {self.leo}, got {batch.base_offset}"
             )
@@ -226,7 +239,13 @@ class Segment:
         for item in self.iter_batches(offset):
             if item.batch.base_offset is None:
                 raise StorageError("stored batch has no base offset")
-            for delta, record in enumerate(item.batch.records):
+            if item.batch.offset_deltas is None:
+                raise StorageError("stored batch has no offset deltas")
+            for delta, record in zip(
+                item.batch.offset_deltas,
+                item.batch.records,
+                strict=True,
+            ):
                 record_offset = item.batch.base_offset + delta
                 if record_offset >= offset:
                     records.append(

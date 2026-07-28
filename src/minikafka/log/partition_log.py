@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import shutil
+import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from minikafka.config import MiniKafkaConfig
@@ -57,7 +61,7 @@ class PartitionLog:
                     config.index_interval_bytes,
                     active=index == len(bases) - 1,
                 )
-                if segments and base != segments[-1].leo:
+                if segments and base < segments[-1].leo:
                     for opened in segments:
                         opened.close()
                     segment.close()
@@ -129,6 +133,11 @@ class PartitionLog:
                 self.config.index_interval_bytes,
             )
         )
+
+    def roll(self) -> None:
+        if not self.active.has_data:
+            return
+        self._roll(self.leo)
 
     def fetch(
         self,
@@ -203,6 +212,11 @@ class PartitionLog:
             return
         batches = self.all_batches()
         boundaries = {self.log_start_offset, self.leo}
+        boundaries.update(
+            batch.base_offset
+            for batch in batches
+            if batch.base_offset is not None
+        )
         boundaries.update(batch.next_offset for batch in batches)
         if next_offset not in boundaries:
             raise InvalidRecord(
@@ -261,6 +275,76 @@ class PartitionLog:
             for path in paths:
                 path.unlink(missing_ok=True)
         return tuple(sorted(requested))
+
+    def install_compacted_closed(
+        self,
+        compacted_batches: tuple[RecordBatch, ...],
+        *,
+        before_swap: Callable[[], None] | None = None,
+    ) -> None:
+        if not self.closed_segments:
+            return
+        parent = self.directory.parent
+        token = uuid.uuid4().hex
+        temporary = parent / f".{self.directory.name}.compact-{token}"
+        backup = parent / f".{self.directory.name}.backup-{token}"
+        temporary.mkdir(parents=True)
+        built: list[Segment] = []
+        try:
+            compacted = Segment.create(
+                temporary,
+                self.log_start_offset,
+                self.config.index_interval_bytes,
+            )
+            built.append(compacted)
+            for batch in compacted_batches:
+                compacted.append(batch, allow_gap=True)
+            compacted.flush()
+
+            active_copy = Segment.create(
+                temporary,
+                self.active.base_offset,
+                self.config.index_interval_bytes,
+            )
+            built.append(active_copy)
+            for located in self.active.iter_batches():
+                active_copy.append(located.batch, allow_gap=True)
+            active_copy.flush()
+            for segment in built:
+                segment.close()
+            built.clear()
+
+            if before_swap is not None:
+                before_swap()
+
+            for segment in self._segments:
+                segment.close()
+            os.replace(self.directory, backup)
+            try:
+                os.replace(temporary, self.directory)
+            except BaseException:
+                os.replace(backup, self.directory)
+                raise
+            directory_fd = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+
+            reopened = PartitionLog.open(
+                self.directory,
+                self.config,
+                leader_epoch=self.leader_epoch,
+            )
+            self._segments = list(reopened._segments)
+            reopened._segments = []
+            shutil.rmtree(backup)
+        except BaseException:
+            for segment in built:
+                segment.close()
+            if temporary.exists():
+                shutil.rmtree(temporary)
+            raise
 
     def flush(self) -> None:
         for segment in self._segments:

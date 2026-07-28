@@ -11,8 +11,8 @@ from minikafka.errors import CorruptBatch, InvalidRecord
 MAGIC = b"MKB1"
 FORMAT_VERSION = 1
 FRAME_HEADER = struct.Struct(">4sII")
-PAYLOAD_HEADER = struct.Struct(">BqIqiiBHI")
-RECORD_HEADER = struct.Struct(">qiiH")
+PAYLOAD_HEADER = struct.Struct(">BqIqiiBiHI")
+RECORD_HEADER = struct.Struct(">iqiiH")
 HEADER_KEY_LENGTH = struct.Struct(">H")
 HEADER_VALUE_LENGTH = struct.Struct(">i")
 
@@ -57,16 +57,24 @@ def encode_batch(batch: RecordBatch) -> bytes:
             batch.producer_epoch,
             batch.base_sequence,
             flags,
+            batch.last_offset_delta,
             len(transaction_id),
             len(batch.records),
         )
     )
     payload.extend(transaction_id)
-    for record in batch.records:
+    if batch.offset_deltas is None:
+        raise InvalidRecord("batch has no offset deltas")
+    for offset_delta, record in zip(
+        batch.offset_deltas,
+        batch.records,
+        strict=True,
+    ):
         key_length, key = _pack_optional_bytes(record.key)
         value_length, value = _pack_optional_bytes(record.value)
         payload.extend(
             RECORD_HEADER.pack(
+                offset_delta,
                 record.timestamp_ms,
                 key_length,
                 value_length,
@@ -143,6 +151,7 @@ def decode_batch(encoded: bytes, *, max_batch_bytes: int = 16_777_216) -> Record
         producer_epoch,
         base_sequence,
         flags,
+        last_offset_delta,
         transaction_id_length,
         record_count,
     ) = reader.unpack(PAYLOAD_HEADER)
@@ -161,10 +170,15 @@ def decode_batch(encoded: bytes, *, max_batch_bytes: int = 16_777_216) -> Record
         raise CorruptBatch("transaction ID present without transactional flag")
 
     records: list[Record] = []
+    offset_deltas: list[int] = []
     for _ in range(record_count):
-        timestamp_ms, key_length, value_length, header_count = reader.unpack(
-            RECORD_HEADER
-        )
+        (
+            offset_delta,
+            timestamp_ms,
+            key_length,
+            value_length,
+            header_count,
+        ) = reader.unpack(RECORD_HEADER)
         key = _read_optional(reader, key_length)
         value = _read_optional(reader, value_length)
         headers: list[Header] = []
@@ -179,6 +193,7 @@ def decode_batch(encoded: bytes, *, max_batch_bytes: int = 16_777_216) -> Record
                 raise CorruptBatch("invalid header key encoding") from error
             headers.append(Header(header_key, header_value))
         records.append(Record(key, value, timestamp_ms, tuple(headers)))
+        offset_deltas.append(offset_delta)
     if reader.remaining:
         raise CorruptBatch("batch contains trailing bytes")
 
@@ -195,6 +210,8 @@ def decode_batch(encoded: bytes, *, max_batch_bytes: int = 16_777_216) -> Record
     try:
         return RecordBatch(
             records=tuple(records),
+            offset_deltas=tuple(offset_deltas),
+            last_offset_delta=last_offset_delta,
             base_offset=base_offset,
             leader_epoch=leader_epoch,
             producer_id=producer_id,

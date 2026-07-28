@@ -15,6 +15,8 @@ class ControlType(str, Enum):
 @dataclass(frozen=True, slots=True)
 class RecordBatch:
     records: tuple[Record, ...]
+    offset_deltas: tuple[int, ...] | None = None
+    last_offset_delta: int | None = None
     base_offset: int | None = None
     leader_epoch: int = -1
     producer_id: int = -1
@@ -33,6 +35,32 @@ class RecordBatch:
             raise InvalidRecord("control batch requires a transaction ID")
         if self.base_offset is not None and self.base_offset < 0:
             raise InvalidRecord("base offset cannot be negative")
+        offset_deltas = self.offset_deltas
+        if offset_deltas is None:
+            offset_deltas = tuple(range(len(self.records)))
+            object.__setattr__(self, "offset_deltas", offset_deltas)
+        if len(offset_deltas) != len(self.records):
+            raise InvalidRecord("offset delta count must match record count")
+        if any(delta < 0 for delta in offset_deltas):
+            raise InvalidRecord("offset deltas cannot be negative")
+        if tuple(sorted(set(offset_deltas))) != offset_deltas:
+            raise InvalidRecord("offset deltas must be strictly increasing")
+        last_offset_delta = self.last_offset_delta
+        if last_offset_delta is None:
+            last_offset_delta = (
+                max(offset_deltas, default=-1)
+                if self.control is None
+                else 0
+            )
+            object.__setattr__(
+                self,
+                "last_offset_delta",
+                last_offset_delta,
+            )
+        if last_offset_delta < 0:
+            raise InvalidRecord("last offset delta cannot be negative")
+        if offset_deltas and offset_deltas[-1] > last_offset_delta:
+            raise InvalidRecord("record offset exceeds last offset delta")
 
     @classmethod
     def unassigned(
@@ -73,7 +101,9 @@ class RecordBatch:
 
     @property
     def logical_count(self) -> int:
-        return max(1, len(self.records))
+        if self.last_offset_delta is None:
+            raise InvalidRecord("batch has no last offset delta")
+        return self.last_offset_delta + 1
 
     @property
     def next_offset(self) -> int:

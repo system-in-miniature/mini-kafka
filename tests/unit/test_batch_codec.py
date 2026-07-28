@@ -86,3 +86,20 @@ def test_unknown_format_version_is_rejected() -> None:
         encode_batch(changed)
 
     assert encoded.startswith(b"MKB1")
+
+
+def test_compacted_batch_preserves_offset_gaps_and_logical_end() -> None:
+    batch = RecordBatch(
+        records=(
+            Record(key=b"a", value=b"new", timestamp_ms=2),
+            Record(key=None, value=b"event", timestamp_ms=4),
+        ),
+        offset_deltas=(2, 4),
+        last_offset_delta=4,
+    ).assign(base_offset=10, leader_epoch=1)
+
+    decoded = decode_batch(encode_batch(batch))
+
+    assert decoded.offset_deltas == (2, 4)
+    assert decoded.last_offset_delta == 4
+    assert decoded.next_offset == 15
