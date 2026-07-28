@@ -51,6 +51,12 @@ class OffsetStore:
         self,
         groups: dict[str, dict[TopicPartition, int]],
     ) -> None:
+        self.commit_many_sync(groups)
+
+    def commit_many_sync(
+        self,
+        groups: dict[str, dict[TopicPartition, int]],
+    ) -> None:
         for group_id, offsets in groups.items():
             if any(offset < 0 for offset in offsets.values()):
                 raise ValueError("committed offsets cannot be negative")

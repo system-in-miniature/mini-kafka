@@ -27,9 +27,11 @@ from minikafka.log.partition_log import PartitionLog
 from minikafka.log.segment import LocatedBatch
 from minikafka.producer.producer import Producer
 from minikafka.producer.state import ProducerIdentityStore
-from minikafka.replication.model import AckMode
+from minikafka.replication.model import AckMode, IsolationLevel
 from minikafka.replication.replica import Replica
 from minikafka.replication.replica_set import PartitionReplicaSet
+from minikafka.transaction.journal import TransactionJournal
+from minikafka.transaction.manager import TransactionManager
 
 
 class BrokerCluster:
@@ -62,6 +64,10 @@ class BrokerCluster:
         )
         self._replica_sets: dict[TopicPartition, PartitionReplicaSet] = {}
         self._build_replica_sets()
+        self.transactions = TransactionManager(
+            self,
+            TransactionJournal(config.data_dir / "transactions.journal"),
+        )
         self._closed = False
 
     @classmethod
@@ -253,24 +259,47 @@ class BrokerCluster:
         tp: TopicPartition,
         offset: int,
         max_records: int,
+        isolation: IsolationLevel = IsolationLevel.READ_UNCOMMITTED,
     ) -> tuple[StoredRecord, ...]:
-        records = self.leader_log(tp).fetch(
-            offset,
-            max_records,
-            end_offset=self.visible_end(tp),
-        )
-        return tuple(
-            StoredRecord(
-                topic=tp.topic,
-                partition=tp.partition,
-                offset=record.offset,
-                key=record.key,
-                value=record.value,
-                timestamp_ms=record.timestamp_ms,
-                headers=record.headers,
-            )
-            for record in records
-        )
+        end_offset = self.visible_end(tp)
+        if isolation is IsolationLevel.READ_COMMITTED:
+            end_offset = self.transactions.last_stable_offset(tp, end_offset)
+        stored: list[StoredRecord] = []
+        for batch in self.leader_log(tp).read_batches(offset, 2**63 - 1):
+            if batch.base_offset is None or batch.base_offset >= end_offset:
+                break
+            if batch.control is not None:
+                continue
+            if (
+                isolation is IsolationLevel.READ_COMMITTED
+                and batch.transactional_id is not None
+                and not self.transactions.is_committed(batch.transactional_id)
+            ):
+                continue
+            if batch.offset_deltas is None:
+                continue
+            for delta, record in zip(
+                batch.offset_deltas,
+                batch.records,
+                strict=True,
+            ):
+                record_offset = batch.base_offset + delta
+                if record_offset < offset or record_offset >= end_offset:
+                    continue
+                stored.append(
+                    StoredRecord(
+                        topic=tp.topic,
+                        partition=tp.partition,
+                        offset=record_offset,
+                        key=record.key,
+                        value=record.value,
+                        timestamp_ms=record.timestamp_ms,
+                        headers=record.headers,
+                    )
+                )
+                if len(stored) == max_records:
+                    return tuple(stored)
+        return tuple(stored)
 
     def visible_end(self, tp: TopicPartition) -> int:
         return self.replica_set(tp).high_watermark
