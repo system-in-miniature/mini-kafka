@@ -11,6 +11,10 @@ class MiniKafkaConfig:
     segment_max_bytes: int = 1_048_576
     index_interval_bytes: int = 4_096
     group_session_timeout_ms: int = 10_000
+    replica_lag_max_offsets: int = 10_000
+    replica_lag_time_ms: int = 10_000
+    replica_fetch_max_bytes: int = 1_048_576
+    min_insync_replicas: int = 1
 
     def __post_init__(self) -> None:
         if self.segment_max_bytes <= 0:
@@ -25,3 +29,11 @@ class MiniKafkaConfig:
             raise ValueError("broker_ids cannot be negative")
         if self.group_session_timeout_ms <= 0:
             raise ValueError("group_session_timeout_ms must be positive")
+        if self.replica_lag_max_offsets < 0:
+            raise ValueError("replica_lag_max_offsets cannot be negative")
+        if self.replica_lag_time_ms <= 0:
+            raise ValueError("replica_lag_time_ms must be positive")
+        if self.replica_fetch_max_bytes <= 0:
+            raise ValueError("replica_fetch_max_bytes must be positive")
+        if self.min_insync_replicas <= 0:
+            raise ValueError("min_insync_replicas must be positive")

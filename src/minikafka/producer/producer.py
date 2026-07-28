@@ -11,6 +11,7 @@ from minikafka.core.record import Header, Record
 from minikafka.errors import UnknownPartition
 from minikafka.producer.accumulator import BatchAccumulator, PendingRecord
 from minikafka.producer.partitioner import Partitioner
+from minikafka.replication.model import AckMode
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,10 +32,12 @@ class Producer:
         batch_size: int,
         linger_ms: int,
         max_buffer_bytes: int,
+        acks: AckMode | str | int,
     ) -> None:
         self.cluster = cluster
         self.clock = clock
         self.partitioner = Partitioner()
+        self.acks = AckMode.parse(acks)
         self.accumulator = BatchAccumulator(
             batch_size=batch_size,
             linger_ms=linger_ms,
@@ -94,7 +97,7 @@ class Producer:
             tuple(item.record for item in pending),
         )
         try:
-            appended = await self.cluster.append_leader_batch(tp, batch)
+            appended = await self.cluster.append_batch(tp, batch, self.acks)
         except Exception as error:  # noqa: BLE001 - forward batch failure
             for item in pending:
                 if not item.future.done():

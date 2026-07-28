@@ -25,6 +25,9 @@ from minikafka.errors import (
 from minikafka.log.partition_log import PartitionLog
 from minikafka.log.segment import LocatedBatch
 from minikafka.producer.producer import Producer
+from minikafka.replication.model import AckMode
+from minikafka.replication.replica import Replica
+from minikafka.replication.replica_set import PartitionReplicaSet
 
 
 class BrokerCluster:
@@ -52,6 +55,8 @@ class BrokerCluster:
         self._producers: set[Producer] = set()
         self._consumers: set[Consumer] = set()
         self._next_member_id = 1
+        self._replica_sets: dict[TopicPartition, PartitionReplicaSet] = {}
+        self._build_replica_sets()
         self._closed = False
 
     @classmethod
@@ -140,6 +145,9 @@ class BrokerCluster:
             raise
         self._logs.update(opened)
         self._topics[name] = topic
+        for partition, metadata in partition_metadata.items():
+            tp = TopicPartition(name, partition)
+            self._replica_sets[tp] = self._make_replica_set(tp, metadata)
         return topic
 
     async def describe_topic(self, name: str) -> TopicMetadata:
@@ -182,7 +190,17 @@ class BrokerCluster:
         batch: RecordBatch,
     ) -> LocatedBatch:
         self._ensure_open()
-        return self.leader_log(tp).append(batch)
+        result = await self.append_batch(tp, batch, AckMode.LEADER)
+        return LocatedBatch(result.batch, 0, 0)
+
+    async def append_batch(
+        self,
+        tp: TopicPartition,
+        batch: RecordBatch,
+        acks: AckMode | str | int,
+    ):
+        self._ensure_open()
+        return await self.replica_set(tp).append(batch, acks)
 
     def producer(
         self,
@@ -190,6 +208,7 @@ class BrokerCluster:
         batch_size: int = 16_384,
         linger_ms: int = 0,
         max_buffer_bytes: int = 1_048_576,
+        acks: AckMode | str | int = AckMode.LEADER,
     ) -> Producer:
         self._ensure_open()
         producer = Producer(
@@ -198,6 +217,7 @@ class BrokerCluster:
             batch_size=batch_size,
             linger_ms=linger_ms,
             max_buffer_bytes=max_buffer_bytes,
+            acks=acks,
         )
         self._producers.add(producer)
         return producer
@@ -211,6 +231,11 @@ class BrokerCluster:
         offset: int,
         max_records: int,
     ) -> tuple[StoredRecord, ...]:
+        records = self.leader_log(tp).fetch(
+            offset,
+            max_records,
+            end_offset=self.visible_end(tp),
+        )
         return tuple(
             StoredRecord(
                 topic=tp.topic,
@@ -221,15 +246,11 @@ class BrokerCluster:
                 timestamp_ms=record.timestamp_ms,
                 headers=record.headers,
             )
-            for record in self.leader_log(tp).fetch(
-                offset,
-                max_records,
-                end_offset=self.visible_end(tp),
-            )
+            for record in records
         )
 
     def visible_end(self, tp: TopicPartition) -> int:
-        return self.leader_log(tp).leo
+        return self.replica_set(tp).high_watermark
 
     def log_start_offset(self, tp: TopicPartition) -> int:
         return self.leader_log(tp).log_start_offset
@@ -259,6 +280,41 @@ class BrokerCluster:
 
     async def expire_group_members(self) -> tuple[tuple[str, str], ...]:
         return await self.groups.expire_members()
+
+    def replica_set(self, tp: TopicPartition) -> PartitionReplicaSet:
+        self.partition_metadata(tp)
+        return self._replica_sets[tp]
+
+    def _make_replica_set(
+        self,
+        tp: TopicPartition,
+        metadata: PartitionMetadata,
+    ) -> PartitionReplicaSet:
+        now = self.clock.now_ms()
+        return PartitionReplicaSet(
+            tp,
+            metadata,
+            {
+                broker_id: Replica(
+                    broker_id,
+                    self._logs[(tp, broker_id)],
+                    last_fetch_ms=now,
+                )
+                for broker_id in metadata.replicas
+            },
+            self.clock,
+            self.config,
+        )
+
+    def _build_replica_sets(self) -> None:
+        for topic in self._topics.values():
+            for partition, metadata in topic.partitions.items():
+                tp = TopicPartition(topic.name, partition)
+                self._replica_sets[tp] = self._make_replica_set(tp, metadata)
+
+    async def replicate_all_once(self) -> None:
+        for tp in sorted(self._replica_sets):
+            await self._replica_sets[tp].fetch_followers_once()
 
     async def close(self) -> None:
         if self._closed:
