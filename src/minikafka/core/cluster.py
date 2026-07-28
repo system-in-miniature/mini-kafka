@@ -4,6 +4,8 @@ from typing import Self
 
 from minikafka.clock import Clock, SystemClock
 from minikafka.config import MiniKafkaConfig
+from minikafka.consumer.consumer import Consumer
+from minikafka.consumer.offsets import OffsetStore
 from minikafka.core.batch import RecordBatch
 from minikafka.core.metadata import (
     MetadataStore,
@@ -13,6 +15,7 @@ from minikafka.core.metadata import (
     round_robin_replicas,
     validate_topic_name,
 )
+from minikafka.core.record import StoredRecord
 from minikafka.errors import (
     TopicAlreadyExists,
     UnknownPartition,
@@ -31,13 +34,16 @@ class BrokerCluster:
         topics: dict[str, TopicMetadata],
         logs: dict[tuple[TopicPartition, int], PartitionLog],
         clock: Clock,
+        offsets: OffsetStore,
     ) -> None:
         self.config = config
         self._metadata_store = metadata_store
         self._topics = topics
         self._logs = logs
         self.clock = clock
+        self.offsets = offsets
         self._producers: set[Producer] = set()
+        self._consumers: set[Consumer] = set()
         self._closed = False
 
     @classmethod
@@ -72,6 +78,7 @@ class BrokerCluster:
             topics,
             logs,
             SystemClock() if clock is None else clock,
+            OffsetStore.open(config.data_dir / "offsets.json"),
         )
 
     async def __aenter__(self) -> Self:
@@ -190,11 +197,58 @@ class BrokerCluster:
     def debug_batch_count(self, tp: TopicPartition) -> int:
         return len(self.leader_log(tp).all_batches())
 
+    def fetch(
+        self,
+        tp: TopicPartition,
+        offset: int,
+        max_records: int,
+    ) -> tuple[StoredRecord, ...]:
+        return tuple(
+            StoredRecord(
+                topic=tp.topic,
+                partition=tp.partition,
+                offset=record.offset,
+                key=record.key,
+                value=record.value,
+                timestamp_ms=record.timestamp_ms,
+                headers=record.headers,
+            )
+            for record in self.leader_log(tp).fetch(
+                offset,
+                max_records,
+                end_offset=self.visible_end(tp),
+            )
+        )
+
+    def visible_end(self, tp: TopicPartition) -> int:
+        return self.leader_log(tp).leo
+
+    def log_start_offset(self, tp: TopicPartition) -> int:
+        return self.leader_log(tp).log_start_offset
+
+    def consumer(
+        self,
+        *,
+        group_id: str,
+        auto_offset_reset: str = "earliest",
+    ) -> Consumer:
+        self._ensure_open()
+        consumer = Consumer(
+            self,
+            group_id,
+            auto_offset_reset=auto_offset_reset,
+        )
+        self._consumers.add(consumer)
+        return consumer
+
     async def close(self) -> None:
         if self._closed:
             return
         for producer in tuple(self._producers):
             await producer.close()
+        for consumer in tuple(self._consumers):
+            await consumer.close()
+        self.offsets.flush()
         for log in self._logs.values():
             log.flush()
             log.close()
