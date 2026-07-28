@@ -26,3 +26,12 @@ class StoredRecord:
     value: bytes | None
     timestamp_ms: int
     headers: tuple[Header, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LogRecord:
+    offset: int
+    key: bytes | None
+    value: bytes | None
+    timestamp_ms: int
+    headers: tuple[Header, ...] = ()

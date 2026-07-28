@@ -27,3 +27,7 @@ class CorruptBatch(MiniKafkaError):
 
 class CorruptIndex(MiniKafkaError):
     code = "CORRUPT_INDEX"
+
+
+class StorageError(MiniKafkaError):
+    code = "STORAGE_ERROR"
