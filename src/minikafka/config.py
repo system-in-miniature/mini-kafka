@@ -10,6 +10,7 @@ class MiniKafkaConfig:
     broker_ids: tuple[int, ...] = (1,)
     segment_max_bytes: int = 1_048_576
     index_interval_bytes: int = 4_096
+    group_session_timeout_ms: int = 10_000
 
     def __post_init__(self) -> None:
         if self.segment_max_bytes <= 0:
@@ -22,3 +23,5 @@ class MiniKafkaConfig:
             raise ValueError("broker_ids must be unique")
         if any(broker_id < 0 for broker_id in self.broker_ids):
             raise ValueError("broker_ids cannot be negative")
+        if self.group_session_timeout_ms <= 0:
+            raise ValueError("group_session_timeout_ms must be positive")

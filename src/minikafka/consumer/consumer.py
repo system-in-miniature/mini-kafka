@@ -18,6 +18,7 @@ class Consumer:
         group_id: str,
         *,
         auto_offset_reset: str,
+        member_id: str,
     ) -> None:
         if not group_id:
             raise ValueError("group_id cannot be empty")
@@ -25,16 +26,21 @@ class Consumer:
             raise ValueError("auto_offset_reset must be earliest, latest, or error")
         self.cluster = cluster
         self.group_id = group_id
+        self.member_id = member_id
         self.auto_offset_reset = auto_offset_reset
         self._assignment: tuple[TopicPartition, ...] = ()
         self._positions: dict[TopicPartition, int] = {}
         self._closed = False
+        self._subscriptions: tuple[str, ...] = ()
+        self._generation: int | None = None
 
     @property
     def assignment(self) -> tuple[TopicPartition, ...]:
         return self._assignment
 
     def assign(self, partitions: Iterable[TopicPartition]) -> None:
+        if self._subscriptions:
+            raise ValueError("cannot directly assign a subscribed consumer")
         assigned = tuple(sorted(set(partitions)))
         for tp in assigned:
             self.cluster.partition_metadata(tp)
@@ -44,6 +50,45 @@ class Consumer:
             for tp, position in self._positions.items()
             if tp in assigned
         }
+
+    async def subscribe(self, topics: Iterable[str]) -> None:
+        subscriptions = tuple(sorted(set(topics)))
+        joined = await self.cluster.groups.join(
+            self.group_id,
+            self.member_id,
+            subscriptions,
+        )
+        self._subscriptions = subscriptions
+        self._apply_join(joined.generation, joined.assignment)
+
+    async def refresh_assignment(self) -> None:
+        joined = self.cluster.groups.assignment(
+            self.group_id,
+            self.member_id,
+        )
+        self._apply_join(joined.generation, joined.assignment)
+
+    def _apply_join(
+        self,
+        generation: int,
+        assignment: tuple[TopicPartition, ...],
+    ) -> None:
+        self._generation = generation
+        self._assignment = assignment
+        self._positions = {
+            tp: position
+            for tp, position in self._positions.items()
+            if tp in assignment
+        }
+
+    async def heartbeat(self) -> None:
+        if self._generation is None:
+            raise ValueError("consumer has not joined a group")
+        await self.cluster.groups.heartbeat(
+            self.group_id,
+            self.member_id,
+            self._generation,
+        )
 
     async def _initial_position(self, tp: TopicPartition) -> int:
         committed = await self.committed(tp)
@@ -114,13 +159,25 @@ class Consumer:
         return await self.cluster.offsets.get(self.group_id, tp)
 
     async def commit(self) -> None:
-        await self.cluster.offsets.commit(
-            self.group_id,
-            dict(self._positions),
-        )
+        if self._subscriptions:
+            if self._generation is None:
+                raise ValueError("consumer has not joined a group")
+            await self.cluster.groups.commit(
+                self.group_id,
+                self.member_id,
+                self._generation,
+                dict(self._positions),
+            )
+        else:
+            await self.cluster.offsets.commit(
+                self.group_id,
+                dict(self._positions),
+            )
 
     async def lag(self, tp: TopicPartition) -> int:
         return max(0, self.cluster.visible_end(tp) - self.position(tp))
 
     async def close(self) -> None:
+        if self._subscriptions:
+            await self.cluster.groups.leave(self.group_id, self.member_id)
         self._closed = True

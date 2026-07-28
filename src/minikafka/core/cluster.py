@@ -5,6 +5,7 @@ from typing import Self
 from minikafka.clock import Clock, SystemClock
 from minikafka.config import MiniKafkaConfig
 from minikafka.consumer.consumer import Consumer
+from minikafka.consumer.group import GroupCoordinator
 from minikafka.consumer.offsets import OffsetStore
 from minikafka.core.batch import RecordBatch
 from minikafka.core.metadata import (
@@ -42,8 +43,15 @@ class BrokerCluster:
         self._logs = logs
         self.clock = clock
         self.offsets = offsets
+        self.groups = GroupCoordinator(
+            clock=clock,
+            offset_store=offsets,
+            topic_partitions=self._topic_partitions,
+            session_timeout_ms=config.group_session_timeout_ms,
+        )
         self._producers: set[Producer] = set()
         self._consumers: set[Consumer] = set()
+        self._next_member_id = 1
         self._closed = False
 
     @classmethod
@@ -237,9 +245,20 @@ class BrokerCluster:
             self,
             group_id,
             auto_offset_reset=auto_offset_reset,
+            member_id=f"member-{self._next_member_id}",
         )
+        self._next_member_id += 1
         self._consumers.add(consumer)
         return consumer
+
+    def _topic_partitions(self) -> dict[str, tuple[int, ...]]:
+        return {
+            topic.name: tuple(sorted(topic.partitions))
+            for topic in self._topics.values()
+        }
+
+    async def expire_group_members(self) -> tuple[tuple[str, str], ...]:
+        return await self.groups.expire_members()
 
     async def close(self) -> None:
         if self._closed:

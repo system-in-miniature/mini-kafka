@@ -47,3 +47,22 @@ class UnknownPartition(MiniKafkaError):
 
 class ProducerBufferFull(MiniKafkaError):
     code = "PRODUCER_BUFFER_FULL"
+
+
+class RebalanceInProgress(MiniKafkaError):
+    code = "REBALANCE_IN_PROGRESS"
+
+
+class IllegalGeneration(MiniKafkaError):
+    code = "ILLEGAL_GENERATION"
+
+    def __init__(self, actual: int, expected: int) -> None:
+        super().__init__(f"generation {actual} does not match {expected}")
+
+
+class NotPartitionOwner(MiniKafkaError):
+    code = "NOT_PARTITION_OWNER"
+
+
+class UnknownMember(MiniKafkaError):
+    code = "UNKNOWN_MEMBER"
