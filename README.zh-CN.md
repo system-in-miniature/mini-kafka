@@ -2,7 +2,7 @@
 
 # MiniKafka
 
-[![CI](https://github.com/system-in-miniature/MiniKafka/actions/workflows/ci.yml/badge.svg)](https://github.com/system-in-miniature/MiniKafka/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)
+[![CI](https://github.com/system-in-miniature/mini-kafka/actions/workflows/ci.yml/badge.svg)](https://github.com/system-in-miniature/mini-kafka/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)
 
 MiniKafka 是 Kafka 独特领域语义的一套直接 API 优先（direct-first）参考实现。
 它是一个分区式、可重放的事件日志，而非二进制协议练习，也不兼容 Kafka 线协议。

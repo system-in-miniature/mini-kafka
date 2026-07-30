@@ -1,8 +1,8 @@
 site_name: MiniKafka Tutorial
 site_description: A chapter-based guide to MiniKafka and the Kafka mechanisms it models
-site_url: https://system-in-miniature.github.io/MiniKafka/
-repo_url: https://github.com/system-in-miniature/MiniKafka
-repo_name: system-in-miniature/MiniKafka
+site_url: https://system-in-miniature.github.io/mini-kafka/
+repo_url: https://github.com/system-in-miniature/mini-kafka
+repo_name: system-in-miniature/mini-kafka
 docs_dir: docs
 
 theme:

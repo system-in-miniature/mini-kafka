@@ -2,7 +2,7 @@
 
 # MiniKafka
 
-[![CI](https://github.com/system-in-miniature/MiniKafka/actions/workflows/ci.yml/badge.svg)](https://github.com/system-in-miniature/MiniKafka/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)
+[![CI](https://github.com/system-in-miniature/mini-kafka/actions/workflows/ci.yml/badge.svg)](https://github.com/system-in-miniature/mini-kafka/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)
 
 MiniKafka is a direct-first reference implementation of Kafka's distinctive
 domain semantics. It is a partitioned, replayable event log—not a binary
