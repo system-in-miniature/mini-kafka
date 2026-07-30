@@ -20,7 +20,7 @@
 
 `src/minikafka/transaction/journal.py` 的 `TransactionJournal.append` 把完整当前状态序列化为一个 JSON payload，加上 CRC32 前缀，追加换行，flush 并调用 `fsync`。journal 是状态快照序列，不是原地修改的数据库。`TransactionJournal.recover` 扫描 CRC 合法的 frame，并为每个 transaction ID 保留最后状态。最终一行若不完整、格式错误或 CRC 错误，文件会被截断到最后一个合法边界。
 
-这和 append-only log 的尾部修复思想相同：崩溃可能留下不完整的最后一次写入，但不能把任意更早的损坏当成合法状态。该 journal 是本地单进程文件，没有经过 MiniKafka 分区复制。
+这和 append-only log 的尾部修复思想相同：崩溃可能留下不完整的最后一次写入，但不能把任意更早的损坏当成合法状态。该 journal 是本地单进程文件，没有经过 MiniKafka 分区复制。这里有一个刻意保留的局限：恢复在**首个坏行**处停止，并整体截断其后的全部内容；即使后续行本身格式与 CRC 都合法，也不会越过中间损坏重新同步。这是尾部修复，不是中段损坏后的 resynchronization。
 
 `src/minikafka/transaction/manager.py` 的 `TransactionManager.__init__` 恢复 journal 后立即调用 `TransactionManager._finish_recovery`。PREPARE 状态之所以重要，是因为它们记录了持久决定：
 
@@ -153,7 +153,7 @@ UV_CACHE_DIR=/tmp/minikafka-uv-cache uv run pytest -q \
 
 ```text
 ......                                                                   [100%]
-6 passed in 0.38s
+6 passed in 0.48s
 ```
 
 ## 练习

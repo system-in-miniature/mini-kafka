@@ -41,7 +41,10 @@ last valid boundary.
 This is the same tail-repair idea used by append-only logs: a crash can leave an
 incomplete final write, but it must not turn arbitrary earlier corruption into
 valid state. The journal is local and single-process; it is not replicated by
-MiniKafka's partition replication.
+MiniKafka's partition replication. A deliberate limitation is that recovery
+stops at the first bad line and truncates **all content after it**, even if
+later lines are independently well-formed; this is tail repair, not
+resynchronization past middle corruption.
 
 `src/minikafka/transaction/manager.py`, `TransactionManager.__init__`, recovers
 the journal and immediately calls `TransactionManager._finish_recovery`.
@@ -244,7 +247,7 @@ Measured output:
 
 ```text
 ......                                                                   [100%]
-6 passed in 0.38s
+6 passed in 0.48s
 ```
 
 ## Exercises
