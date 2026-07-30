@@ -1,3 +1,9 @@
+"""Producer ID/epoch fencing and per-partition sequence deduplication.
+
+This is the broker-side core of Kafka's idempotent producer from KIP-98, with a
+deliberate one-batch history instead of Kafka's five-batch duplicate window.
+"""
+
 from __future__ import annotations
 
 import json
@@ -60,6 +66,10 @@ class ProducerStateManager:
             and batch.producer_epoch == previous.epoch
             and batch.last_sequence <= previous.last_sequence
         ):
+            # KIP-98 retries use PID, epoch, and sequence numbers. Kafka keeps
+            # five recent batches (matching max.in.flight.requests.per.connection
+            # <= 5); this teaching state stores only the latest exact batch, so
+            # older reordered retries become OutOfOrderSequence below.
             recorded = previous.result.batch
             if (
                 batch.base_sequence == recorded.base_sequence

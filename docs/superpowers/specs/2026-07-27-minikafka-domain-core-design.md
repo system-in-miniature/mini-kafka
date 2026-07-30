@@ -85,7 +85,7 @@ The project does not implement:
 - a production transaction coordinator, internal transaction topic, or full
   transaction recovery across arbitrary coordinator failures;
 - unclean leader election;
-- all Kafka compression codecs or Kafka's exact record binary format;
+- record compression codecs or Kafka's exact record binary format;
 - production page-cache, JVM, or throughput parity;
 - application architecture exercises or course chapters.
 
@@ -154,13 +154,13 @@ A batch contains one or more records and carries:
 - base/max timestamps;
 - leader epoch;
 - CRC32 over the stable payload;
-- flags for compression, transaction, and control records;
+- flags for transaction and control records;
 - producer ID, producer epoch, and base sequence;
 - optional transaction ID.
 
-The custom format is length-delimited and versioned. Gzip is the only optional
-compression codec. Broker append assigns offsets; the producer never chooses
-them.
+The custom format is length-delimited, versioned, and always uncompressed.
+There is no compression flag or codec implementation. Broker append assigns
+offsets; the producer never chooses them.
 
 ### 6.3 Offset boundaries
 
@@ -342,7 +342,8 @@ Compaction:
 4. retains tombstones until `delete_retention_ms`, then may remove them;
 5. preserves original offsets and therefore offset gaps;
 6. writes new segment/index files in a temporary directory;
-7. fsyncs and atomically swaps the cleaned segment set.
+7. fsyncs a sibling directory, then installs it with two individually atomic
+   renames and in-process rollback (the pair is not one atomic exchange).
 
 The active segment is never cleaned. Fetch, replay, producer state recovery,
 and transaction markers must tolerate gaps.

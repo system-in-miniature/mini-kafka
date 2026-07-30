@@ -1,3 +1,5 @@
+> **Language**: English | [简体中文](README.zh-CN.md)
+
 # MiniKafka
 
 MiniKafka is a direct-first reference implementation of Kafka's distinctive
@@ -68,6 +70,14 @@ The test suite deterministically demonstrates:
 - aborted and open transactions stay hidden from `read_committed`;
 - crash recovery repairs partial batches, indexes and journal tails.
 
+Two reader-facing labs turn the most important trade-offs into narrated
+experiments:
+
+```bash
+uv run python -m minikafka.labs.leader_failure
+uv run python -m minikafka.labs.rebalance
+```
+
 Run:
 
 ```bash
@@ -85,6 +95,40 @@ manual leader promotion, one-process broker simulation and a bounded
 transaction coordinator. It does not implement Kafka wire compatibility,
 KRaft/ZooKeeper, TLS/SASL/ACL, quotas, rack-aware placement, tiered storage,
 Kafka Connect, Kafka Streams or a production transaction protocol.
+
+Important semantic differences are explicit:
+
+- idempotent-producer deduplication remembers one batch per producer/partition,
+  while Kafka retains the latest five; an older out-of-order retry is rejected
+  instead of deduplicated;
+- high watermarks are reconstructed from replica LEOs at startup rather than
+  loaded from Kafka-style replication checkpoint files;
+- failover truncates at the high watermark instead of using the leader-epoch
+  divergence protocol from KIP-101, and MiniKafka may truncate the promoted
+  replica itself—behavior that is semantically opposite to Kafka;
+- `PartitionLog.truncate_to` rewrites the retained log into a new segment and
+  startup scans every batch to recover the maximum leader epoch; Kafka
+  truncates tail files and uses a leader-epoch checkpoint;
+- record batches are always uncompressed. There is no gzip or other
+  compression implementation;
+- group rebalance is an immediate coordinator-side assignment, not Kafka's
+  two-phase JoinGroup/SyncGroup protocol, and has no revoke barrier or
+  cooperative rebalance;
+- committed offsets live in an atomically replaced JSON file, not Kafka's
+  compacted `__consumer_offsets` topic;
+- transactions now use `acks=all` for data and markers, but they are not built
+  on the idempotent producer's PID/epoch sequence state, so this is not Kafka's
+  zombie-fenced transaction protocol;
+- retention deletes only a continuous prefix of closed segments, matching
+  Kafka's no-middle-hole invariant; timestamp indexing and `offsetsForTimes`
+  remain unimplemented;
+- compaction rebuilds a sibling directory and installs it with two atomic
+  renames. The pair is not one atomic exchange, although in-process failure
+  rolls back; this is a teaching implementation rather than Kafka's
+  background log-cleaner file lifecycle.
+
+See [MiniKafka → Kafka mapping](docs/kafka-mapping.md) for the complete,
+graded comparison and references to relevant Kafka configurations and KIPs.
 
 The implementation follows concepts documented in Apache Kafka's official
 [log implementation](https://kafka.apache.org/43/implementation/log/),

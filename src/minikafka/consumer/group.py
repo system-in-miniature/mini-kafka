@@ -1,3 +1,11 @@
+"""Deterministic consumer-group membership, assignment, and generation fencing.
+
+This coordinator keeps Kafka's classic generation-ownership invariant but
+intentionally collapses JoinGroup/SyncGroup into one eager server-side
+rebalance. KIP-62's liveness split and KIP-429 cooperative incremental
+rebalancing are not implemented.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
@@ -160,6 +168,9 @@ class GroupCoordinator:
 
     @staticmethod
     def _validate_generation(group: Group, generation: int) -> None:
+        # Kafka includes the group generation in heartbeat and offset-commit
+        # requests. A membership change increments it, fencing a stale owner
+        # before it can commit progress for a partition now assigned elsewhere.
         if generation != group.generation:
             raise IllegalGeneration(generation, group.generation)
 

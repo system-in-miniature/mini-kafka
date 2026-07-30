@@ -1,3 +1,10 @@
+"""Key compaction and tombstone retention for closed log segments.
+
+The policy corresponds to Kafka ``cleanup.policy=compact`` and
+``delete.retention.ms``; MiniKafka rebuilds a whole closed-segment view so the
+crash-safety boundary is easy to inspect.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
@@ -49,6 +56,12 @@ class LogCompactor:
                 if rewritten is not None:
                     compacted.append(rewritten)
                     records_after += len(rewritten.records)
+        # Kafka's log cleaner rewrites segment files in the background. This
+        # project instead fsyncs a sibling directory, renames live -> backup,
+        # then replacement -> live, with rollback on an in-process exception.
+        # Each rename is atomic but the pair is not: a process crash between
+        # them can leave only the backup. The simpler boundary still avoids
+        # publishing partially written segment files and preserves offset gaps.
         log.install_compacted_closed(
             tuple(compacted),
             before_swap=self.before_swap,

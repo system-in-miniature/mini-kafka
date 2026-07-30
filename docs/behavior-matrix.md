@@ -1,3 +1,5 @@
+> **Language**: English | [简体中文](zh/behavior-matrix.md)
+
 # MiniKafka behavior matrix
 
 This matrix binds each promised semantic to executable evidence.
@@ -12,7 +14,7 @@ This matrix binds each promised semantic to executable evidence.
 | Position, commit, rewind and restart | `tests/consumer/test_positions.py`, `tests/reliability/test_offset_restart.py` |
 | Single group owner and generation fencing | `tests/consumer/test_group_rebalance.py`, `tests/consumer/test_generation_fencing.py` |
 | Segment retention | `tests/log/test_retention.py` |
-| Key compaction and atomic swap | `tests/log/test_compaction.py`, `tests/reliability/test_compaction_swap.py` |
+| Key compaction and failure-aware directory replacement | `tests/log/test_compaction.py`, `tests/reliability/test_compaction_swap.py` |
 | Follower fetch, ISR and high watermark | `tests/replication/test_follower_fetch.py`, `tests/replication/test_high_watermark.py` |
 | Ack modes and acknowledged-write loss | `tests/replication/test_ack_modes.py`, `tests/reliability/test_lost_acked_write.py` |
 | Promotion fencing and divergent-tail truncation | `test_old_leader_truncates_uncommitted_tail`, `tests/replication/test_promotion.py` |
