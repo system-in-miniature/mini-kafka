@@ -1,8 +1,6 @@
-# MiniKafka Domain Core Implementation Plan
+# MiniKafka Domain Core Design and Implementation History
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
-**Goal:** Build a direct-first MiniKafka whose durable partition log, consumer ownership, ISR/high-watermark visibility, idempotent retry, and transaction visibility can be executed and failure-tested.
+**Historical objective:** Build a direct-first MiniKafka whose durable partition log, consumer ownership, ISR/high-watermark visibility, idempotent retry, and transaction visibility can be executed and failure-tested.
 
 **Architecture:** A Python `BrokerCluster` owns topic metadata and coordinators; each partition replica set serializes Kafka-specific replication state while each replica owns a disk-backed `PartitionLog`. Direct clients are normative and a thin JSON/TCP adapter delegates to the same services.
 
@@ -68,19 +66,19 @@ tests/
 └── test_final_acceptance.py            end-to-end project contract
 ```
 
-### Task 1: Project contract and primitives
+### Milestone 1: Project contract and primitives
 
-**Files:**
-- Create: `pyproject.toml`
-- Create: `.gitignore`
-- Create: `src/minikafka/__init__.py`
-- Create: `src/minikafka/clock.py`
-- Create: `src/minikafka/config.py`
-- Create: `src/minikafka/errors.py`
-- Create: `tests/unit/test_primitives.py`
-- Create: `tests/test_project_contract.py`
+**Recorded file scope:**
+- Added: `pyproject.toml`
+- Added: `.gitignore`
+- Added: `src/minikafka/__init__.py`
+- Added: `src/minikafka/clock.py`
+- Added: `src/minikafka/config.py`
+- Added: `src/minikafka/errors.py`
+- Added: `tests/unit/test_primitives.py`
+- Added: `tests/test_project_contract.py`
 
-- [ ] **Step 1: Write failing primitive and repository-contract tests**
+**Recorded activity 1 — Test intent: failing primitive and repository-contract tests**
 
 ```python
 from pathlib import Path
@@ -111,13 +109,13 @@ def test_course_is_not_embedded() -> None:
     assert not Path("course").exists()
 ```
 
-- [ ] **Step 2: Run tests and verify collection fails**
+**Recorded activity 2 — Verification intent: tests and verify collection fails**
 
-Run: `uv run pytest tests/unit/test_primitives.py tests/test_project_contract.py -q`
+Historical verification covered targeted or full test coverage, including `tests/unit/test_primitives.py`, `tests/test_project_contract.py`.
 
-Expected: FAIL because `minikafka` and project metadata do not exist.
+Historical expected evidence: FAIL because `minikafka` and project metadata do not exist.
 
-- [ ] **Step 3: Add the build contract and minimal primitives**
+**Recorded activity 3 — Design outcome: the build contract and minimal primitives**
 
 ```python
 @dataclass
@@ -142,33 +140,26 @@ class OffsetOutOfRange(MiniKafkaError):
         )
 ```
 
-Configure hatchling for `src/minikafka`, Python `>=3.12`, pytest asyncio mode,
+The recorded project configuration used hatchling for `src/minikafka`, Python `>=3.12`, pytest asyncio mode,
 Ruff line length 88, and dev dependencies `pytest>=9,<10`,
 `pytest-asyncio>=1.3,<2`, and `ruff>=0.12,<1`.
 
-- [ ] **Step 4: Run primitive tests and lint**
+**Recorded activity 4 — Verification intent: primitive tests and lint**
 
-Run: `uv sync --dev && uv run pytest tests/unit/test_primitives.py tests/test_project_contract.py -q && uv run ruff check .`
+Historical verification covered targeted or full test coverage, static analysis, including `tests/unit/test_primitives.py`, `tests/test_project_contract.py`.
 
-Expected: all tests pass and Ruff reports no errors.
+Historical expected evidence: all tests pass and Ruff reports no errors.
 
-- [ ] **Step 5: Commit**
+### Milestone 2: Record batches and binary codec
 
-```bash
-git add pyproject.toml .gitignore src tests
-git commit -m "chore: establish MiniKafka project contract"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/core/__init__.py`
+- Added: `src/minikafka/core/record.py`
+- Added: `src/minikafka/core/batch.py`
+- Added: `src/minikafka/core/batch_codec.py`
+- Added: `tests/unit/test_batch_codec.py`
 
-### Task 2: Record batches and binary codec
-
-**Files:**
-- Create: `src/minikafka/core/__init__.py`
-- Create: `src/minikafka/core/record.py`
-- Create: `src/minikafka/core/batch.py`
-- Create: `src/minikafka/core/batch_codec.py`
-- Create: `tests/unit/test_batch_codec.py`
-
-- [ ] **Step 1: Write failing round-trip, CRC, and binary-safety tests**
+**Recorded activity 1 — Test intent: failing round-trip, CRC, and binary-safety tests**
 
 ```python
 def test_batch_round_trip_preserves_binary_records() -> None:
@@ -192,13 +183,13 @@ def test_crc_detects_payload_corruption() -> None:
         decode_batch(bytes(encoded))
 ```
 
-- [ ] **Step 2: Run the codec tests and verify RED**
+**Recorded activity 2 — Verification intent: the codec tests and verify RED**
 
-Run: `uv run pytest tests/unit/test_batch_codec.py -q`
+Historical verification covered targeted or full test coverage, including `tests/unit/test_batch_codec.py`.
 
-Expected: FAIL with missing record/batch modules.
+Historical expected evidence: FAIL with missing record/batch modules.
 
-- [ ] **Step 3: Implement immutable records, assignment, and framing**
+**Recorded activity 3 — Design outcome: immutable records, assignment, and framing**
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -227,32 +218,25 @@ class RecordBatch:
         return self.base_offset + len(self.records)
 ```
 
-Use a fixed prefix `(magic, frame_length, crc)` followed by a deterministic
+The design used a fixed prefix `(magic, frame_length, crc)` followed by a deterministic
 payload containing flags, offsets, timestamps, producer metadata, transaction
 ID, and length-delimited records. Reject empty data batches, negative lengths,
 unsupported versions, trailing bytes, and frames above `max_batch_bytes`.
 
-- [ ] **Step 4: Run codec tests**
+**Recorded activity 4 — Verification intent: codec tests**
 
-Run: `uv run pytest tests/unit/test_batch_codec.py -q`
+Historical verification covered targeted or full test coverage, including `tests/unit/test_batch_codec.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 3: Sparse offset index
 
-```bash
-git add src/minikafka/core tests/unit/test_batch_codec.py
-git commit -m "feat: add binary-safe record batch codec"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/log/__init__.py`
+- Added: `src/minikafka/log/index.py`
+- Added: `tests/unit/test_offset_index.py`
 
-### Task 3: Sparse offset index
-
-**Files:**
-- Create: `src/minikafka/log/__init__.py`
-- Create: `src/minikafka/log/index.py`
-- Create: `tests/unit/test_offset_index.py`
-
-- [ ] **Step 1: Write failing floor-lookup and reload tests**
+**Recorded activity 1 — Test intent: failing floor-lookup and reload tests**
 
 ```python
 def test_sparse_index_returns_floor_position(tmp_path: Path) -> None:
@@ -272,13 +256,13 @@ def test_index_rejects_non_monotonic_entries(tmp_path: Path) -> None:
         index.append(offset=4, position=30)
 ```
 
-- [ ] **Step 2: Run the index tests and verify RED**
+**Recorded activity 2 — Verification intent: the index tests and verify RED**
 
-Run: `uv run pytest tests/unit/test_offset_index.py -q`
+Historical verification covered targeted or full test coverage, including `tests/unit/test_offset_index.py`.
 
-Expected: FAIL because `OffsetIndex` is undefined.
+Historical expected evidence: FAIL because `OffsetIndex` is undefined.
 
-- [ ] **Step 3: Implement fixed-width index entries**
+**Recorded activity 3 — Design outcome: fixed-width index entries**
 
 ```python
 ENTRY = struct.Struct(">IQ")
@@ -299,28 +283,21 @@ def append(self, offset: int, position: int) -> None:
 Load complete entries only; reject partial/corrupt index files so callers can
 rebuild them from the log. Binary-search entries with `bisect_right`.
 
-- [ ] **Step 4: Run index tests**
+**Recorded activity 4 — Verification intent: index tests**
 
-Run: `uv run pytest tests/unit/test_offset_index.py -q`
+Historical verification covered targeted or full test coverage, including `tests/unit/test_offset_index.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 4: Segments and active-tail recovery
 
-```bash
-git add src/minikafka/log tests/unit/test_offset_index.py
-git commit -m "feat: add sparse offset index"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/log/segment.py`
+- Added: `src/minikafka/log/recovery.py`
+- Added: `tests/log/test_segment.py`
+- Added: `tests/log/test_recovery.py`
 
-### Task 4: Segments and active-tail recovery
-
-**Files:**
-- Create: `src/minikafka/log/segment.py`
-- Create: `src/minikafka/log/recovery.py`
-- Create: `tests/log/test_segment.py`
-- Create: `tests/log/test_recovery.py`
-
-- [ ] **Step 1: Write failing append/scan/truncated-tail tests**
+**Recorded activity 1 — Test intent: failing append/scan/truncated-tail tests**
 
 ```python
 def test_segment_appends_and_scans_from_offset(tmp_path: Path) -> None:
@@ -341,13 +318,13 @@ def test_active_tail_is_truncated_to_last_valid_batch(tmp_path: Path) -> None:
     assert recovered.leo == 1
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+**Recorded activity 2 — Verification intent: tests and verify RED**
 
-Run: `uv run pytest tests/log/test_segment.py tests/log/test_recovery.py -q`
+Historical verification covered targeted or full test coverage, including `tests/log/test_segment.py`, `tests/log/test_recovery.py`.
 
-Expected: FAIL because segment/recovery APIs do not exist.
+Historical expected evidence: FAIL because segment/recovery APIs do not exist.
 
-- [ ] **Step 3: Implement segment ownership and repair**
+**Recorded activity 3 — Design outcome: segment ownership and repair**
 
 ```python
 def append(self, batch: RecordBatch) -> BatchLocation:
@@ -368,27 +345,20 @@ Recovery scans `[length][encoded batch]`, verifies bounds/CRC/offset
 continuity, and truncates only the active file at the first invalid frame.
 Rebuild the index from valid frame positions.
 
-- [ ] **Step 4: Run segment and recovery tests**
+**Recorded activity 4 — Verification intent: segment and recovery tests**
 
-Run: `uv run pytest tests/log/test_segment.py tests/log/test_recovery.py -q`
+Historical verification covered targeted or full test coverage, including `tests/log/test_segment.py`, `tests/log/test_recovery.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 5: Partition log and segment rollover
 
-```bash
-git add src/minikafka/log tests/log
-git commit -m "feat: add recoverable log segments"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/log/partition_log.py`
+- Added: `tests/log/test_partition_log.py`
+- Added: `tests/reliability/test_log_restart.py`
 
-### Task 5: Partition log and segment rollover
-
-**Files:**
-- Create: `src/minikafka/log/partition_log.py`
-- Create: `tests/log/test_partition_log.py`
-- Create: `tests/reliability/test_log_restart.py`
-
-- [ ] **Step 1: Write failing rollover, offset lookup, and restart tests**
+**Recorded activity 1 — Test intent: failing rollover, offset lookup, and restart tests**
 
 ```python
 def test_partition_log_rolls_and_fetches_across_segments(tmp_path: Path) -> None:
@@ -412,13 +382,13 @@ def test_restart_preserves_leo_and_offsets(tmp_path: Path) -> None:
     assert [r.offset for r in reopened.fetch(0, 10)] == [0, 1]
 ```
 
-- [ ] **Step 2: Run partition-log tests and verify RED**
+**Recorded activity 2 — Verification intent: partition-log tests and verify RED**
 
-Run: `uv run pytest tests/log/test_partition_log.py tests/reliability/test_log_restart.py -q`
+Historical verification covered targeted or full test coverage, including `tests/log/test_partition_log.py`, `tests/reliability/test_log_restart.py`.
 
-Expected: FAIL because `PartitionLog` is missing.
+Historical expected evidence: FAIL because `PartitionLog` is missing.
 
-- [ ] **Step 3: Implement immutable segment views and logical fetch**
+**Recorded activity 3 — Design outcome: immutable segment views and logical fetch**
 
 ```python
 def append(self, batch: RecordBatch) -> AppendInfo:
@@ -442,30 +412,23 @@ Closed-segment corruption raises `StorageError`; only active-tail repair is
 automatic. `truncate_to(next_offset)` removes later segments and rewrites the
 containing segment at a batch boundary.
 
-- [ ] **Step 4: Run log tests and the whole current suite**
+**Recorded activity 4 — Verification intent: log tests and the whole current suite**
 
-Run: `uv run pytest tests/log tests/reliability/test_log_restart.py -q`
+Historical verification covered targeted or full test coverage, including `tests/log`, `tests/reliability/test_log_restart.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 6: Topic metadata and Direct cluster
 
-```bash
-git add src/minikafka/log tests/log tests/reliability
-git commit -m "feat: build segmented partition log"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/core/metadata.py`
+- Added: `src/minikafka/core/cluster.py`
+- Added: `src/minikafka/adapters/__init__.py`
+- Added: `src/minikafka/adapters/direct.py`
+- Added: `tests/unit/test_metadata.py`
+- Added: `tests/test_direct_cluster.py`
 
-### Task 6: Topic metadata and Direct cluster
-
-**Files:**
-- Create: `src/minikafka/core/metadata.py`
-- Create: `src/minikafka/core/cluster.py`
-- Create: `src/minikafka/adapters/__init__.py`
-- Create: `src/minikafka/adapters/direct.py`
-- Create: `tests/unit/test_metadata.py`
-- Create: `tests/test_direct_cluster.py`
-
-- [ ] **Step 1: Write failing metadata and Direct API tests**
+**Recorded activity 1 — Test intent: failing metadata and Direct API tests**
 
 ```python
 @pytest.mark.asyncio
@@ -478,13 +441,13 @@ async def test_create_topic_builds_partition_logs(tmp_path: Path) -> None:
             await cluster.create_topic("orders", 1, 1)
 ```
 
-- [ ] **Step 2: Run Direct-cluster tests and verify RED**
+**Recorded activity 2 — Verification intent: Direct-cluster tests and verify RED**
 
-Run: `uv run pytest tests/unit/test_metadata.py tests/test_direct_cluster.py -q`
+Historical verification covered targeted or full test coverage, including `tests/unit/test_metadata.py`, `tests/test_direct_cluster.py`.
 
-Expected: FAIL because cluster and metadata do not exist.
+Historical expected evidence: FAIL because cluster and metadata do not exist.
 
-- [ ] **Step 3: Implement validated metadata and cluster lifecycle**
+**Recorded activity 3 — Design outcome: validated metadata and cluster lifecycle**
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -513,31 +476,24 @@ async def create_topic(
 Persist metadata with temp-file, fsync, atomic rename, and parent fsync.
 `DirectAdmin` delegates to the cluster without alternate semantics.
 
-- [ ] **Step 4: Run Direct cluster tests**
+**Recorded activity 4 — Verification intent: Direct cluster tests**
 
-Run: `uv run pytest tests/unit/test_metadata.py tests/test_direct_cluster.py -q`
+Historical verification covered targeted or full test coverage, including `tests/unit/test_metadata.py`, `tests/test_direct_cluster.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 7: Producer partitioning and batching
 
-```bash
-git add src/minikafka/core src/minikafka/adapters tests
-git commit -m "feat: add direct topic administration"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/producer/__init__.py`
+- Added: `src/minikafka/producer/partitioner.py`
+- Added: `src/minikafka/producer/accumulator.py`
+- Added: `src/minikafka/producer/producer.py`
+- Added: `tests/unit/test_partitioner.py`
+- Added: `tests/producer/test_batching.py`
+- Added: `tests/producer/test_ordering.py`
 
-### Task 7: Producer partitioning and batching
-
-**Files:**
-- Create: `src/minikafka/producer/__init__.py`
-- Create: `src/minikafka/producer/partitioner.py`
-- Create: `src/minikafka/producer/accumulator.py`
-- Create: `src/minikafka/producer/producer.py`
-- Create: `tests/unit/test_partitioner.py`
-- Create: `tests/producer/test_batching.py`
-- Create: `tests/producer/test_ordering.py`
-
-- [ ] **Step 1: Write failing keyed, sticky, batch-size, and linger tests**
+**Recorded activity 1 — Test intent: failing keyed, sticky, batch-size, and linger tests**
 
 ```python
 def test_keyed_partition_is_stable() -> None:
@@ -559,13 +515,13 @@ async def test_linger_flushes_one_partition_batch(cluster, manual_clock) -> None
     assert cluster.debug_batches("events", (await first).partition) == 1
 ```
 
-- [ ] **Step 2: Run producer tests and verify RED**
+**Recorded activity 2 — Verification intent: producer tests and verify RED**
 
-Run: `uv run pytest tests/unit/test_partitioner.py tests/producer -q`
+Historical verification covered targeted or full test coverage, including `tests/unit/test_partitioner.py`, `tests/producer`.
 
-Expected: FAIL because producer components are missing.
+Historical expected evidence: FAIL because producer components are missing.
 
-- [ ] **Step 3: Implement stable selection and bounded accumulators**
+**Recorded activity 3 — Design outcome: stable selection and bounded accumulators**
 
 ```python
 def choose(self, partition_count: int, key: bytes | None) -> int:
@@ -587,30 +543,23 @@ def add(self, pending: PendingRecord) -> tuple[PendingBatch, ...]:
 partitioner, keyless selection rotates after a batch closes, and `flush()`
 drains all partitions in deterministic topic/partition order.
 
-- [ ] **Step 4: Run producer tests**
+**Recorded activity 4 — Verification intent: producer tests**
 
-Run: `uv run pytest tests/unit/test_partitioner.py tests/producer -q`
+Historical verification covered targeted or full test coverage, including `tests/unit/test_partitioner.py`, `tests/producer`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 8: Consumer positions and durable committed offsets
 
-```bash
-git add src/minikafka/producer tests/unit/test_partitioner.py tests/producer
-git commit -m "feat: add partitioned producer batching"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/consumer/__init__.py`
+- Added: `src/minikafka/consumer/offsets.py`
+- Added: `src/minikafka/consumer/consumer.py`
+- Added: `tests/consumer/test_positions.py`
+- Added: `tests/consumer/test_delivery_semantics.py`
+- Added: `tests/reliability/test_offset_restart.py`
 
-### Task 8: Consumer positions and durable committed offsets
-
-**Files:**
-- Create: `src/minikafka/consumer/__init__.py`
-- Create: `src/minikafka/consumer/offsets.py`
-- Create: `src/minikafka/consumer/consumer.py`
-- Create: `tests/consumer/test_positions.py`
-- Create: `tests/consumer/test_delivery_semantics.py`
-- Create: `tests/reliability/test_offset_restart.py`
-
-- [ ] **Step 1: Write failing position/commit/rewind/restart tests**
+**Recorded activity 1 — Test intent: failing position/commit/rewind/restart tests**
 
 ```python
 @pytest.mark.asyncio
@@ -627,13 +576,13 @@ async def test_position_and_commit_are_independent(cluster) -> None:
     assert (await consumer.poll(1))[0].offset == 0
 ```
 
-- [ ] **Step 2: Run consumer tests and verify RED**
+**Recorded activity 2 — Verification intent: consumer tests and verify RED**
 
-Run: `uv run pytest tests/consumer tests/reliability/test_offset_restart.py -q`
+Historical verification covered targeted or full test coverage, including `tests/consumer`, `tests/reliability/test_offset_restart.py`.
 
-Expected: FAIL because consumer components are missing.
+Historical expected evidence: FAIL because consumer components are missing.
 
-- [ ] **Step 3: Implement next-offset positions and atomic offset store**
+**Recorded activity 3 — Design outcome: next-offset positions and atomic offset store**
 
 ```python
 async def poll(self, max_records: int) -> tuple[StoredRecord, ...]:
@@ -656,29 +605,22 @@ async def commit(self) -> None:
 Offset persistence uses deterministic JSON keys and atomic replace. Implement
 lag as `visible_end - position` and reset policies for retained-range errors.
 
-- [ ] **Step 4: Run consumer and restart tests**
+**Recorded activity 4 — Verification intent: consumer and restart tests**
 
-Run: `uv run pytest tests/consumer tests/reliability/test_offset_restart.py -q`
+Historical verification covered targeted or full test coverage, including `tests/consumer`, `tests/reliability/test_offset_restart.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 9: Consumer groups, rebalance, and fencing
 
-```bash
-git add src/minikafka/consumer tests/consumer tests/reliability
-git commit -m "feat: add replayable consumer positions"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/consumer/assignor.py`
+- Added: `src/minikafka/consumer/group.py`
+- Added: `tests/unit/test_assignor.py`
+- Added: `tests/consumer/test_group_rebalance.py`
+- Added: `tests/consumer/test_generation_fencing.py`
 
-### Task 9: Consumer groups, rebalance, and fencing
-
-**Files:**
-- Create: `src/minikafka/consumer/assignor.py`
-- Create: `src/minikafka/consumer/group.py`
-- Create: `tests/unit/test_assignor.py`
-- Create: `tests/consumer/test_group_rebalance.py`
-- Create: `tests/consumer/test_generation_fencing.py`
-
-- [ ] **Step 1: Write failing assignment and stale-commit tests**
+**Recorded activity 1 — Test intent: failing assignment and stale-commit tests**
 
 ```python
 def test_round_robin_assignor_has_single_owner() -> None:
@@ -707,13 +649,13 @@ async def test_expired_member_cannot_commit_old_generation(group, clock) -> None
     await group.commit("b", current.generation, {current.assignment[0]: 1})
 ```
 
-- [ ] **Step 2: Run group tests and verify RED**
+**Recorded activity 2 — Verification intent: group tests and verify RED**
 
-Run: `uv run pytest tests/unit/test_assignor.py tests/consumer/test_group_rebalance.py tests/consumer/test_generation_fencing.py -q`
+Historical verification covered targeted or full test coverage, including `tests/unit/test_assignor.py`, `tests/consumer/test_group_rebalance.py`, `tests/consumer/test_generation_fencing.py`.
 
-Expected: FAIL because assignor/coordinator are missing.
+Historical expected evidence: FAIL because assignor/coordinator are missing.
 
-- [ ] **Step 3: Implement group state and ownership checks**
+**Recorded activity 3 — Design outcome: group state and ownership checks**
 
 ```python
 async def _rebalance(self) -> None:
@@ -738,26 +680,19 @@ Every membership/subscription change and expiry increments generation through
 rebalance. Consumer group subscription refreshes its assignment after a
 generation change.
 
-- [ ] **Step 4: Run group tests**
+**Recorded activity 4 — Verification intent: group tests**
 
-Run: `uv run pytest tests/unit/test_assignor.py tests/consumer -q`
+Historical verification covered targeted or full test coverage, including `tests/unit/test_assignor.py`, `tests/consumer`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 10: Retention
 
-```bash
-git add src/minikafka/consumer tests/unit/test_assignor.py tests/consumer
-git commit -m "feat: coordinate consumer group ownership"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/log/retention.py`
+- Added: `tests/log/test_retention.py`
 
-### Task 10: Retention
-
-**Files:**
-- Create: `src/minikafka/log/retention.py`
-- Create: `tests/log/test_retention.py`
-
-- [ ] **Step 1: Write failing time/size and out-of-range tests**
+**Recorded activity 1 — Test intent: failing time/size and out-of-range tests**
 
 ```python
 def test_retention_deletes_closed_segments_only(tmp_path: Path, clock) -> None:
@@ -773,13 +708,13 @@ def test_retention_deletes_closed_segments_only(tmp_path: Path, clock) -> None:
         log.fetch(0, 1)
 ```
 
-- [ ] **Step 2: Run retention tests and verify RED**
+**Recorded activity 2 — Verification intent: retention tests and verify RED**
 
-Run: `uv run pytest tests/log/test_retention.py -q`
+Historical verification covered targeted or full test coverage, including `tests/log/test_retention.py`.
 
-Expected: FAIL because `RetentionManager` is missing.
+Historical expected evidence: FAIL because `RetentionManager` is missing.
 
-- [ ] **Step 3: Implement segment-granular retention**
+**Recorded activity 3 — Design outcome: segment-granular retention**
 
 ```python
 def apply(self, log: PartitionLog, retention_ms: int | None,
@@ -798,30 +733,23 @@ def apply(self, log: PartitionLog, retention_ms: int | None,
     return log.delete_closed_segments(sorted(expired))
 ```
 
-Delete log and index files only after installing a segment view that excludes
+The design deleted log and index files only after installing a segment view that excludes
 them; advance the start offset to the first remaining segment base.
 
-- [ ] **Step 4: Run retention tests**
+**Recorded activity 4 — Verification intent: retention tests**
 
-Run: `uv run pytest tests/log/test_retention.py -q`
+Historical verification covered targeted or full test coverage, including `tests/log/test_retention.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 11: Log compaction and tombstones
 
-```bash
-git add src/minikafka/log/retention.py tests/log/test_retention.py
-git commit -m "feat: add segment retention policies"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/log/compaction.py`
+- Added: `tests/log/test_compaction.py`
+- Added: `tests/reliability/test_compaction_swap.py`
 
-### Task 11: Log compaction and tombstones
-
-**Files:**
-- Create: `src/minikafka/log/compaction.py`
-- Create: `tests/log/test_compaction.py`
-- Create: `tests/reliability/test_compaction_swap.py`
-
-- [ ] **Step 1: Write failing latest-key, gap, tombstone, and swap tests**
+**Recorded activity 1 — Test intent: failing latest-key, gap, tombstone, and swap tests**
 
 ```python
 def test_compaction_preserves_latest_key_and_original_offsets(compactable_log) -> None:
@@ -845,13 +773,13 @@ def test_recent_tombstone_is_retained(compactable_log, clock) -> None:
     assert compactable_log.fetch(0, 10)[-1].value is None
 ```
 
-- [ ] **Step 2: Run compaction tests and verify RED**
+**Recorded activity 2 — Verification intent: compaction tests and verify RED**
 
-Run: `uv run pytest tests/log/test_compaction.py tests/reliability/test_compaction_swap.py -q`
+Historical verification covered targeted or full test coverage, including `tests/log/test_compaction.py`, `tests/reliability/test_compaction_swap.py`.
 
-Expected: FAIL because `LogCompactor` is missing.
+Historical expected evidence: FAIL because `LogCompactor` is missing.
 
-- [ ] **Step 3: Implement closed-segment cleaning and atomic replacement**
+**Recorded activity 3 — Design outcome: closed-segment cleaning and atomic replacement**
 
 ```python
 def compact(self, log: PartitionLog) -> CompactionResult:
@@ -868,36 +796,29 @@ def compact(self, log: PartitionLog) -> CompactionResult:
     return log.install_compacted_segments(source, replacement)
 ```
 
-Write replacement files under a unique sibling temporary directory, fsync
+Historical test and implementation coverage included replacement files under a unique sibling temporary directory, fsync
 files and directory, rename into final names, atomically install the new view,
 then unlink superseded files. Inject failures before install and prove the old
 view remains authoritative.
 
-- [ ] **Step 4: Run compaction tests**
+**Recorded activity 4 — Verification intent: compaction tests**
 
-Run: `uv run pytest tests/log/test_compaction.py tests/reliability/test_compaction_swap.py -q`
+Historical verification covered targeted or full test coverage, including `tests/log/test_compaction.py`, `tests/reliability/test_compaction_swap.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 12: Replica sets, follower fetch, ISR, and high watermark
 
-```bash
-git add src/minikafka/log/compaction.py tests/log tests/reliability
-git commit -m "feat: compact keyed log segments"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/replication/__init__.py`
+- Added: `src/minikafka/replication/model.py`
+- Added: `src/minikafka/replication/replica.py`
+- Added: `src/minikafka/replication/replica_set.py`
+- Added: `tests/replication/test_follower_fetch.py`
+- Added: `tests/replication/test_isr.py`
+- Added: `tests/replication/test_high_watermark.py`
 
-### Task 12: Replica sets, follower fetch, ISR, and high watermark
-
-**Files:**
-- Create: `src/minikafka/replication/__init__.py`
-- Create: `src/minikafka/replication/model.py`
-- Create: `src/minikafka/replication/replica.py`
-- Create: `src/minikafka/replication/replica_set.py`
-- Create: `tests/replication/test_follower_fetch.py`
-- Create: `tests/replication/test_isr.py`
-- Create: `tests/replication/test_high_watermark.py`
-
-- [ ] **Step 1: Write failing replication and visibility tests**
+**Recorded activity 1 — Test intent: failing replication and visibility tests**
 
 ```python
 @pytest.mark.asyncio
@@ -916,13 +837,13 @@ async def test_consumer_cannot_read_above_high_watermark(replica_set) -> None:
     assert await replica_set.fetch(0, 10, IsolationLevel.READ_COMMITTED) == ()
 ```
 
-- [ ] **Step 2: Run replication tests and verify RED**
+**Recorded activity 2 — Verification intent: replication tests and verify RED**
 
-Run: `uv run pytest tests/replication/test_follower_fetch.py tests/replication/test_isr.py tests/replication/test_high_watermark.py -q`
+Historical verification covered targeted or full test coverage, including `tests/replication/test_follower_fetch.py`, `tests/replication/test_isr.py`, `tests/replication/test_high_watermark.py`.
 
-Expected: FAIL because replication components are missing.
+Historical expected evidence: FAIL because replication components are missing.
 
-- [ ] **Step 3: Implement pull replication and exclusive HW**
+**Recorded activity 3 — Design outcome: pull replication and exclusive HW**
 
 ```python
 async def fetch_followers_once(self) -> None:
@@ -944,28 +865,21 @@ Follower append validates leader epoch and offset continuity. ISR refresh uses
 configured time and offset lag thresholds. Fetch selects HW for normal
 visibility and hides control records.
 
-- [ ] **Step 4: Run replication tests**
+**Recorded activity 4 — Verification intent: replication tests**
 
-Run: `uv run pytest tests/replication -q`
+Historical verification covered targeted or full test coverage, including `tests/replication`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 13: Ack modes and acknowledged-write loss
 
-```bash
-git add src/minikafka/replication tests/replication
-git commit -m "feat: model ISR and high watermark"
-```
+**Recorded file scope:**
+- Changed: `src/minikafka/replication/replica_set.py`
+- Changed: `src/minikafka/producer/producer.py`
+- Added: `tests/replication/test_ack_modes.py`
+- Added: `tests/reliability/test_lost_acked_write.py`
 
-### Task 13: Ack modes and acknowledged-write loss
-
-**Files:**
-- Modify: `src/minikafka/replication/replica_set.py`
-- Modify: `src/minikafka/producer/producer.py`
-- Create: `tests/replication/test_ack_modes.py`
-- Create: `tests/reliability/test_lost_acked_write.py`
-
-- [ ] **Step 1: Write failing `acks=all`, insufficient ISR, and loss tests**
+**Recorded activity 1 — Test intent: failing `acks=all`, insufficient ISR, and loss tests**
 
 ```python
 @pytest.mark.asyncio
@@ -986,13 +900,13 @@ async def test_acks_all_rejects_insufficient_isr(replica_set) -> None:
         await replica_set.append(unassigned_batch(b"x"), AckMode.ALL)
 ```
 
-- [ ] **Step 2: Run ack tests and verify RED**
+**Recorded activity 2 — Verification intent: ack tests and verify RED**
 
-Run: `uv run pytest tests/replication/test_ack_modes.py tests/reliability/test_lost_acked_write.py -q`
+Historical verification covered targeted or full test coverage, including `tests/replication/test_ack_modes.py`, `tests/reliability/test_lost_acked_write.py`.
 
-Expected: FAIL because acknowledgement waiters are not implemented.
+Historical expected evidence: FAIL because acknowledgement waiters are not implemented.
 
-- [ ] **Step 3: Implement acknowledgement snapshots and waiter resolution**
+**Recorded activity 3 — Design outcome: acknowledgement snapshots and waiter resolution**
 
 ```python
 async def append(self, batch: RecordBatch, acks: AckMode) -> ProduceResult:
@@ -1013,28 +927,21 @@ the batch end. If ISR drops below minimum first, fail with
 `NotEnoughReplicasAfterAppend`. Add an explicit test-only reply-loss gate so
 non-idempotent retry can observe an ambiguous outcome.
 
-- [ ] **Step 4: Run ack and loss tests**
+**Recorded activity 4 — Verification intent: ack and loss tests**
 
-Run: `uv run pytest tests/replication/test_ack_modes.py tests/reliability/test_lost_acked_write.py -q`
+Historical verification covered targeted or full test coverage, including `tests/replication/test_ack_modes.py`, `tests/reliability/test_lost_acked_write.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 14: Leader epochs, promotion, and divergent-tail truncation
 
-```bash
-git add src/minikafka/replication src/minikafka/producer tests
-git commit -m "feat: implement Kafka acknowledgement modes"
-```
+**Recorded file scope:**
+- Changed: `src/minikafka/replication/replica_set.py`
+- Changed: `src/minikafka/core/metadata.py`
+- Added: `tests/replication/test_promotion.py`
+- Added: `tests/replication/test_divergent_tail.py`
 
-### Task 14: Leader epochs, promotion, and divergent-tail truncation
-
-**Files:**
-- Modify: `src/minikafka/replication/replica_set.py`
-- Modify: `src/minikafka/core/metadata.py`
-- Create: `tests/replication/test_promotion.py`
-- Create: `tests/replication/test_divergent_tail.py`
-
-- [ ] **Step 1: Write failing promotion/fencing/truncation tests**
+**Recorded activity 1 — Test intent: failing promotion/fencing/truncation tests**
 
 ```python
 @pytest.mark.asyncio
@@ -1059,13 +966,13 @@ async def test_old_leader_truncates_uncommitted_tail(replica_set) -> None:
     assert replica_set.replicas[old_leader].leo == 1
 ```
 
-- [ ] **Step 2: Run promotion tests and verify RED**
+**Recorded activity 2 — Verification intent: promotion tests and verify RED**
 
-Run: `uv run pytest tests/replication/test_promotion.py tests/replication/test_divergent_tail.py -q`
+Historical verification covered targeted or full test coverage, including `tests/replication/test_promotion.py`, `tests/replication/test_divergent_tail.py`.
 
-Expected: FAIL because promotion/rejoin are missing.
+Historical expected evidence: FAIL because promotion/rejoin are missing.
 
-- [ ] **Step 3: Implement manual safe promotion**
+**Recorded activity 3 — Design outcome: manual safe promotion**
 
 ```python
 async def promote(self, broker_id: int) -> None:
@@ -1090,29 +997,22 @@ async def rejoin(self, broker_id: int) -> None:
 Every produce/follower-fetch operation validates the supplied leader epoch.
 Persist the updated leader and epoch in metadata after the data-plane barrier.
 
-- [ ] **Step 4: Run promotion tests**
+**Recorded activity 4 — Verification intent: promotion tests**
 
-Run: `uv run pytest tests/replication/test_promotion.py tests/replication/test_divergent_tail.py -q`
+Historical verification covered targeted or full test coverage, including `tests/replication/test_promotion.py`, `tests/replication/test_divergent_tail.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 15: Idempotent producer state
 
-```bash
-git add src/minikafka tests/replication
-git commit -m "feat: fence and truncate on leader promotion"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/producer/state.py`
+- Changed: `src/minikafka/producer/producer.py`
+- Changed: `src/minikafka/replication/replica_set.py`
+- Added: `tests/producer/test_idempotence.py`
+- Added: `tests/reliability/test_producer_state_restart.py`
 
-### Task 15: Idempotent producer state
-
-**Files:**
-- Create: `src/minikafka/producer/state.py`
-- Modify: `src/minikafka/producer/producer.py`
-- Modify: `src/minikafka/replication/replica_set.py`
-- Create: `tests/producer/test_idempotence.py`
-- Create: `tests/reliability/test_producer_state_restart.py`
-
-- [ ] **Step 1: Write failing duplicate, gap, epoch-fence, and restart tests**
+**Recorded activity 1 — Test intent: failing duplicate, gap, epoch-fence, and restart tests**
 
 ```python
 @pytest.mark.asyncio
@@ -1134,13 +1034,13 @@ async def test_old_producer_epoch_is_fenced(cluster) -> None:
         await old.send("events", value=b"stale")
 ```
 
-- [ ] **Step 2: Run idempotence tests and verify RED**
+**Recorded activity 2 — Verification intent: idempotence tests and verify RED**
 
-Run: `uv run pytest tests/producer/test_idempotence.py tests/reliability/test_producer_state_restart.py -q`
+Historical verification covered targeted or full test coverage, including `tests/producer/test_idempotence.py`, `tests/reliability/test_producer_state_restart.py`.
 
-Expected: FAIL because producer state validation is absent.
+Historical expected evidence: FAIL because producer state validation is absent.
 
-- [ ] **Step 3: Implement sequence validation and state rebuild**
+**Recorded activity 3 — Design outcome: sequence validation and state rebuild**
 
 ```python
 def validate(self, batch: RecordBatch) -> DuplicateResult | None:
@@ -1160,35 +1060,28 @@ def validate(self, batch: RecordBatch) -> DuplicateResult | None:
     return None
 ```
 
-Update state only after successful append; store resulting offset ranges.
+The recorded change updated state only after successful append; store resulting offset ranges.
 Rebuild by scanning retained batch headers on replica startup. Require
 `AckMode.ALL` when constructing an idempotent producer.
 
-- [ ] **Step 4: Run producer-state tests**
+**Recorded activity 4 — Verification intent: producer-state tests**
 
-Run: `uv run pytest tests/producer/test_idempotence.py tests/reliability/test_producer_state_restart.py -q`
+Historical verification covered targeted or full test coverage, including `tests/producer/test_idempotence.py`, `tests/reliability/test_producer_state_restart.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 16: Transaction markers and isolation
 
-```bash
-git add src/minikafka/producer src/minikafka/replication tests
-git commit -m "feat: deduplicate idempotent producer retries"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/transaction/__init__.py`
+- Added: `src/minikafka/transaction/model.py`
+- Added: `src/minikafka/transaction/journal.py`
+- Added: `src/minikafka/transaction/manager.py`
+- Changed: `src/minikafka/replication/replica_set.py`
+- Added: `tests/transaction/test_visibility.py`
+- Added: `tests/transaction/test_abort.py`
 
-### Task 16: Transaction markers and isolation
-
-**Files:**
-- Create: `src/minikafka/transaction/__init__.py`
-- Create: `src/minikafka/transaction/model.py`
-- Create: `src/minikafka/transaction/journal.py`
-- Create: `src/minikafka/transaction/manager.py`
-- Modify: `src/minikafka/replication/replica_set.py`
-- Create: `tests/transaction/test_visibility.py`
-- Create: `tests/transaction/test_abort.py`
-
-- [ ] **Step 1: Write failing committed/uncommitted/aborted visibility tests**
+**Recorded activity 1 — Test intent: failing committed/uncommitted/aborted visibility tests**
 
 ```python
 @pytest.mark.asyncio
@@ -1212,13 +1105,13 @@ async def test_aborted_records_remain_hidden(cluster) -> None:
     assert await fetch_values(cluster, "out", READ_COMMITTED) == []
 ```
 
-- [ ] **Step 2: Run transaction visibility tests and verify RED**
+**Recorded activity 2 — Verification intent: transaction visibility tests and verify RED**
 
-Run: `uv run pytest tests/transaction/test_visibility.py tests/transaction/test_abort.py -q`
+Historical verification covered targeted or full test coverage, including `tests/transaction/test_visibility.py`, `tests/transaction/test_abort.py`.
 
-Expected: FAIL because transaction components are missing.
+Historical expected evidence: FAIL because transaction components are missing.
 
-- [ ] **Step 3: Implement transaction states, markers, and filtering**
+**Recorded activity 3 — Design outcome: transaction states, markers, and filtering**
 
 ```python
 async def commit(self, transaction_id: str) -> None:
@@ -1245,29 +1138,22 @@ Track the first unstable offset per open transaction and cap
 `read_committed` at the last stable offset. Control batches carry no user
 records and are always hidden.
 
-- [ ] **Step 4: Run transaction visibility tests**
+**Recorded activity 4 — Verification intent: transaction visibility tests**
 
-Run: `uv run pytest tests/transaction/test_visibility.py tests/transaction/test_abort.py -q`
+Historical verification covered targeted or full test coverage, including `tests/transaction/test_visibility.py`, `tests/transaction/test_abort.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 17: Transactional offset commits and journal recovery
 
-```bash
-git add src/minikafka/transaction src/minikafka/replication tests/transaction
-git commit -m "feat: add transactional record visibility"
-```
+**Recorded file scope:**
+- Changed: `src/minikafka/transaction/manager.py`
+- Changed: `src/minikafka/transaction/journal.py`
+- Changed: `src/minikafka/consumer/group.py`
+- Added: `tests/transaction/test_offsets.py`
+- Added: `tests/reliability/test_transaction_restart.py`
 
-### Task 17: Transactional offset commits and journal recovery
-
-**Files:**
-- Modify: `src/minikafka/transaction/manager.py`
-- Modify: `src/minikafka/transaction/journal.py`
-- Modify: `src/minikafka/consumer/group.py`
-- Create: `tests/transaction/test_offsets.py`
-- Create: `tests/reliability/test_transaction_restart.py`
-
-- [ ] **Step 1: Write failing staged-offset atomicity and restart tests**
+**Recorded activity 1 — Test intent: failing staged-offset atomicity and restart tests**
 
 ```python
 @pytest.mark.asyncio
@@ -1289,13 +1175,13 @@ async def test_abort_discards_staged_offsets(cluster) -> None:
     assert await cluster.offsets.get("workers", TopicPartition("input", 0)) is None
 ```
 
-- [ ] **Step 2: Run transactional-offset tests and verify RED**
+**Recorded activity 2 — Verification intent: transactional-offset tests and verify RED**
 
-Run: `uv run pytest tests/transaction/test_offsets.py tests/reliability/test_transaction_restart.py -q`
+Historical verification covered targeted or full test coverage, including `tests/transaction/test_offsets.py`, `tests/reliability/test_transaction_restart.py`.
 
-Expected: FAIL because staged offsets/recovery are missing.
+Historical expected evidence: FAIL because staged offsets/recovery are missing.
 
-- [ ] **Step 3: Publish offsets only at complete commit**
+**Recorded activity 3 — Publish offsets only at complete commit**
 
 ```python
 async def _complete_commit(self, tx: Transaction) -> None:
@@ -1312,27 +1198,20 @@ incomplete journal tail, reconstructs transactions, finishes
 `PREPARE_COMMIT` markers/offset publication, and completes
 `PREPARE_ABORT` with abort markers. It fences unresolved old producer epochs.
 
-- [ ] **Step 4: Run transaction recovery tests**
+**Recorded activity 4 — Verification intent: transaction recovery tests**
 
-Run: `uv run pytest tests/transaction tests/reliability/test_transaction_restart.py -q`
+Historical verification covered targeted or full test coverage, including `tests/transaction`, `tests/reliability/test_transaction_restart.py`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 18: Thin JSON/TCP adapter
 
-```bash
-git add src/minikafka/transaction src/minikafka/consumer tests
-git commit -m "feat: commit output and offsets transactionally"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/adapters/json_tcp.py`
+- Added: `tests/adapters/test_json_tcp.py`
+- Added: `tests/adapters/test_direct_tcp_parity.py`
 
-### Task 18: Thin JSON/TCP adapter
-
-**Files:**
-- Create: `src/minikafka/adapters/json_tcp.py`
-- Create: `tests/adapters/test_json_tcp.py`
-- Create: `tests/adapters/test_direct_tcp_parity.py`
-
-- [ ] **Step 1: Write failing framing, base64, bounds, and parity tests**
+**Recorded activity 1 — Test intent: failing framing, base64, bounds, and parity tests**
 
 ```python
 @pytest.mark.asyncio
@@ -1352,13 +1231,13 @@ async def test_tcp_produce_and_fetch_match_direct(cluster) -> None:
     assert direct[0].value == b"v"
 ```
 
-- [ ] **Step 2: Run adapter tests and verify RED**
+**Recorded activity 2 — Verification intent: adapter tests and verify RED**
 
-Run: `uv run pytest tests/adapters -q`
+Historical verification covered targeted or full test coverage, including `tests/adapters`.
 
-Expected: FAIL because JSON/TCP server is missing.
+Historical expected evidence: FAIL because JSON/TCP server is missing.
 
-- [ ] **Step 3: Implement bounded newline JSON translation**
+**Recorded activity 3 — Design outcome: bounded newline JSON translation**
 
 ```python
 async def _serve(self, reader: asyncio.StreamReader,
@@ -1381,33 +1260,26 @@ Support `create_topic`, `metadata`, `produce`, `fetch`, `join_group`,
 `heartbeat`, and `commit_offsets`. Encode bytes only as base64 and map typed
 domain errors to `{ok:false, code, message}`.
 
-- [ ] **Step 4: Run adapter tests**
+**Recorded activity 4 — Verification intent: adapter tests**
 
-Run: `uv run pytest tests/adapters -q`
+Historical verification covered targeted or full test coverage, including `tests/adapters`.
 
-Expected: PASS.
+Historical expected evidence: PASS.
 
-- [ ] **Step 5: Commit**
+### Milestone 19: Lifecycle, crash injection, and experiments
 
-```bash
-git add src/minikafka/adapters tests/adapters
-git commit -m "feat: expose thin JSON TCP adapter"
-```
+**Recorded file scope:**
+- Added: `src/minikafka/lifecycle.py`
+- Added: `src/minikafka/labs/__init__.py`
+- Added: `src/minikafka/labs/delivery_semantics.py`
+- Added: `src/minikafka/labs/leader_failure.py`
+- Added: `src/minikafka/labs/rebalance.py`
+- Added: `src/minikafka/labs/compaction.py`
+- Added: `src/minikafka/labs/zero_copy.py`
+- Added: `tests/reliability/test_shutdown.py`
+- Added: `tests/reliability/test_background_failure.py`
 
-### Task 19: Lifecycle, crash injection, and experiments
-
-**Files:**
-- Create: `src/minikafka/lifecycle.py`
-- Create: `src/minikafka/labs/__init__.py`
-- Create: `src/minikafka/labs/delivery_semantics.py`
-- Create: `src/minikafka/labs/leader_failure.py`
-- Create: `src/minikafka/labs/rebalance.py`
-- Create: `src/minikafka/labs/compaction.py`
-- Create: `src/minikafka/labs/zero_copy.py`
-- Create: `tests/reliability/test_shutdown.py`
-- Create: `tests/reliability/test_background_failure.py`
-
-- [ ] **Step 1: Write failing graceful/crash/background-failure tests**
+**Recorded activity 1 — Test intent: failing graceful/crash/background-failure tests**
 
 ```python
 @pytest.mark.asyncio
@@ -1429,13 +1301,13 @@ async def test_background_storage_failure_is_terminal(cluster) -> None:
         await cluster.create_topic("later", 1, 1)
 ```
 
-- [ ] **Step 2: Run lifecycle tests and verify RED**
+**Recorded activity 2 — Verification intent: lifecycle tests and verify RED**
 
-Run: `uv run pytest tests/reliability/test_shutdown.py tests/reliability/test_background_failure.py -q`
+Historical verification covered targeted or full test coverage, including `tests/reliability/test_shutdown.py`, `tests/reliability/test_background_failure.py`.
 
-Expected: FAIL because lifecycle/task ownership is incomplete.
+Historical expected evidence: FAIL because lifecycle/task ownership is incomplete.
 
-- [ ] **Step 3: Implement explicit shutdown states and lab entrypoints**
+**Recorded activity 3 — Design outcome: explicit shutdown states and lab entrypoints**
 
 ```python
 async def close(self) -> None:
@@ -1457,31 +1329,24 @@ Labs expose functions returning structured observations; `zero_copy.py`
 compares `read/sendall` and `os.sendfile` when supported without pass/fail
 throughput thresholds.
 
-- [ ] **Step 4: Run lifecycle tests and compile all modules**
+**Recorded activity 4 — Verification intent: lifecycle tests and compile all modules**
 
-Run: `uv run pytest tests/reliability/test_shutdown.py tests/reliability/test_background_failure.py -q && uv run python -m compileall -q src tests`
+Historical verification covered targeted or full test coverage, bytecode compilation, including `tests/reliability/test_shutdown.py`, `tests/reliability/test_background_failure.py`.
 
-Expected: PASS with no compile errors.
+Historical expected evidence: PASS with no compile errors.
 
-- [ ] **Step 5: Commit**
+### Milestone 20: Final acceptance, behavior matrix, and documentation
 
-```bash
-git add src/minikafka/lifecycle.py src/minikafka/labs tests/reliability
-git commit -m "feat: own MiniKafka lifecycle and failure labs"
-```
+**Recorded file scope:**
+- Added: `README.md`
+- Added: `docs/behavior-matrix.md`
+- Added: `tools/__init__.py`
+- Added: `tools/count_sloc.py`
+- Added: `tests/test_final_acceptance.py`
+- Added: `tests/test_sloc_report.py`
+- Changed: `src/minikafka/__init__.py`
 
-### Task 20: Final acceptance, behavior matrix, and documentation
-
-**Files:**
-- Create: `README.md`
-- Create: `docs/behavior-matrix.md`
-- Create: `tools/__init__.py`
-- Create: `tools/count_sloc.py`
-- Create: `tests/test_final_acceptance.py`
-- Create: `tests/test_sloc_report.py`
-- Modify: `src/minikafka/__init__.py`
-
-- [ ] **Step 1: Write the failing acceptance and documentation tests**
+**Recorded activity 1 — Test intent: the failing acceptance and documentation tests**
 
 ```python
 @pytest.mark.asyncio
@@ -1515,15 +1380,15 @@ def test_readme_states_adapter_and_course_boundaries() -> None:
     assert "Course material is separate" in text
 ```
 
-- [ ] **Step 2: Run acceptance tests and verify RED**
+**Recorded activity 2 — Verification intent: acceptance tests and verify RED**
 
-Run: `uv run pytest tests/test_final_acceptance.py tests/test_sloc_report.py tests/test_project_contract.py -q`
+Historical verification covered targeted or full test coverage, including `tests/test_final_acceptance.py`, `tests/test_sloc_report.py`, `tests/test_project_contract.py`.
 
-Expected: FAIL until exports, README, behavior evidence, and SLOC report exist.
+Historical expected evidence: FAIL until exports, README, behavior evidence, and SLOC report exist.
 
-- [ ] **Step 3: Finish public API and evidence documents**
+**Recorded activity 3 — Finish public API and evidence documents**
 
-Export:
+The public interface exported:
 
 ```python
 from minikafka.config import MiniKafkaConfig
@@ -1551,27 +1416,12 @@ failure experiments, test commands, and explicit course separation.
 `behavior-matrix.md` maps every design acceptance criterion to a concrete test
 node. SLOC tooling reports production/test/docs counts without a size gate.
 
-- [ ] **Step 4: Run full verification**
+**Recorded activity 4 — Verification intent: full verification**
 
-Run:
+Historical verification covered targeted or full test coverage, static analysis, bytecode compilation, diff hygiene, including `tools/count_sloc.py`.
 
-```bash
-uv run ruff check .
-uv run pytest -q
-uv run python -m compileall -q src tests
-uv run python tools/count_sloc.py
-git diff --check
-```
-
-Expected: all tests pass, Ruff and compileall are clean, SLOC prints counts,
-and `git diff --check` emits no output.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add README.md docs src tools tests pyproject.toml uv.lock
-git commit -m "docs: accept MiniKafka domain core"
-```
+Historical expected evidence: all tests pass, Ruff and compileall are clean, SLOC prints counts,
+and the whitespace-error check emits no output.
 
 ## Plan self-review
 

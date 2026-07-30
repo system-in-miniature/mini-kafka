@@ -2,7 +2,7 @@
 
 Date: 2026-07-27
 
-Status: Approved under final-acceptance authorization
+Status: Historical design record
 
 ## 1. Purpose
 
@@ -524,7 +524,7 @@ Every implementation slice follows red-green-refactor. Tests use temporary
 directories, injected clocks, deterministic member and producer IDs, explicit
 replication pumps, and failure gates.
 
-Test layers:
+Historical test coverage included layers:
 
 1. **Codec/unit:** record batches, CRC, sparse index, partitioners, assignors.
 2. **Log contract:** append/fetch, rollover, recovery, truncation, gaps.
