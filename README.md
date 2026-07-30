@@ -2,6 +2,8 @@
 
 # MiniKafka
 
+[![CI](https://github.com/system-in-miniature/MiniKafka/actions/workflows/ci.yml/badge.svg)](https://github.com/system-in-miniature/MiniKafka/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)
+
 MiniKafka is a direct-first reference implementation of Kafka's distinctive
 domain semantics. It is a partitioned, replayable event log—not a binary
 protocol exercise and not Kafka wire-protocol compatible.
@@ -142,3 +144,7 @@ Course material is separate from this implementation repository. This
 repository is the completed, executable reference artifact; a later course
 repository may teach it incrementally without coupling lessons to runtime
 code or embedding chapter content here.
+
+## Trademark Notice
+
+MiniKafka is an independent educational project. It is not affiliated with, endorsed by, or sponsored by the Apache Software Foundation. "Apache Kafka" is a trademark of its respective owner.

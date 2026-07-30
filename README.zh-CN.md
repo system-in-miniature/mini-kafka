@@ -2,6 +2,8 @@
 
 # MiniKafka
 
+[![CI](https://github.com/system-in-miniature/MiniKafka/actions/workflows/ci.yml/badge.svg)](https://github.com/system-in-miniature/MiniKafka/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)
+
 MiniKafka 是 Kafka 独特领域语义的一套直接 API 优先（direct-first）参考实现。
 它是一个分区式、可重放的事件日志，而非二进制协议练习，也不兼容 Kafka 线协议。
 
@@ -134,3 +136,7 @@ TLS/SASL/ACL、配额、机架感知放置、分层存储、Kafka Connect、Kafk
 
 课程材料与本实现仓库相互独立。本仓库是已完成、可执行的参考产物；后续课程仓库
 可以渐进式讲授它，而无需将课程与运行时代码耦合，也无需在此嵌入章节内容。
+
+## 商标声明
+
+MiniKafka 是独立的教学项目，与 the Apache Software Foundation 无隶属、背书或赞助关系。"Apache Kafka" 商标归其所有者所有。
