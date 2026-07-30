@@ -14,7 +14,7 @@ in a small executable model; it is not a wire-compatible broker.
 需要 Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)。
 
 ```bash
-git clone https://github.com/system-in-miniature/MiniKafka.git
+git clone https://github.com/system-in-miniature/mini-kafka.git
 cd MiniKafka
 uv sync
 ```
@@ -35,4 +35,4 @@ uv run python -m minikafka.labs.leader_failure
 [Apache Kafka](kafka-mapping.md)。
 
 完整 API、功能范围和验证命令见
-[仓库中文 README](https://github.com/system-in-miniature/MiniKafka/blob/main/README.zh-CN.md)。
+[仓库中文 README](https://github.com/system-in-miniature/mini-kafka/blob/main/README.zh-CN.md)。

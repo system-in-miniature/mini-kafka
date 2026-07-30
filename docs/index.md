@@ -16,7 +16,7 @@ wire-compatible broker.
 You need Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/system-in-miniature/MiniKafka.git
+git clone https://github.com/system-in-miniature/mini-kafka.git
 cd MiniKafka
 uv sync
 ```
@@ -38,4 +38,4 @@ Continue with the [architecture tour](architecture.md), then compare each
 mechanism with [Apache Kafka](kafka-mapping.md).
 
 For the full API, feature list, scope, and verification commands, read the
-[repository README](https://github.com/system-in-miniature/MiniKafka/blob/main/README.md).
+[repository README](https://github.com/system-in-miniature/mini-kafka/blob/main/README.md).
