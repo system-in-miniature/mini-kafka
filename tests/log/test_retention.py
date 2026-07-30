@@ -32,6 +32,19 @@ def rolled_log(tmp_path: Path) -> PartitionLog:
     return log
 
 
+def non_monotonic_log(tmp_path: Path) -> PartitionLog:
+    config = MiniKafkaConfig(
+        data_dir=tmp_path,
+        segment_max_bytes=80,
+        index_interval_bytes=1,
+    )
+    log = PartitionLog.open(tmp_path / "non-monotonic-0", config)
+    for timestamp in (250, 0, 0, 250):
+        append(log, b"x" * 20, timestamp)
+    assert len(log.closed_segments) >= 3
+    return log
+
+
 def test_time_retention_deletes_closed_segments_only(tmp_path: Path) -> None:
     log = rolled_log(tmp_path)
     active_base = log.active.base_offset
@@ -44,6 +57,22 @@ def test_time_retention_deletes_closed_segments_only(tmp_path: Path) -> None:
     assert log.log_start_offset == active_base
     with pytest.raises(OffsetOutOfRange):
         log.fetch(0, 1)
+    log.close()
+
+
+def test_time_retention_stops_at_first_non_expired_segment(
+    tmp_path: Path,
+) -> None:
+    log = non_monotonic_log(tmp_path)
+
+    deleted = RetentionManager(ManualClock(300)).apply(
+        log,
+        retention_ms=100,
+        retention_bytes=None,
+    )
+
+    assert deleted == ()
+    assert tuple(segment.base_offset for segment in log.segments) == (0, 1, 2, 3)
     log.close()
 
 
@@ -62,6 +91,18 @@ def test_size_retention_deletes_oldest_segments_first(tmp_path: Path) -> None:
     assert deleted == tuple(sorted(deleted))
     assert newest_closed not in deleted
     assert log.log_start_offset > 0
+    log.close()
+
+
+def test_partition_log_rejects_non_prefix_segment_deletion(
+    tmp_path: Path,
+) -> None:
+    log = rolled_log(tmp_path)
+
+    with pytest.raises(ValueError, match="continuous prefix"):
+        log.delete_closed_segments((0, 2))
+
+    assert tuple(segment.base_offset for segment in log.segments) == (0, 1, 2, 3)
     log.close()
 
 

@@ -1,7 +1,15 @@
+"""Leader/follower replication, ISR membership, HW, and acknowledgement policy.
+
+The model exposes Kafka's data-plane decisions deterministically, while manual
+promotion and HW-based truncation deliberately avoid implementing a controller
+or the full KIP-101 leader-epoch reconciliation protocol.
+"""
+
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from minikafka.clock import Clock
 from minikafka.config import MiniKafkaConfig
@@ -17,6 +25,9 @@ from minikafka.errors import (
 from minikafka.producer.state import ProducerStateManager
 from minikafka.replication.model import AckMode, IsolationLevel, ProduceResult
 from minikafka.replication.replica import Replica
+
+if TYPE_CHECKING:
+    from minikafka.transaction.manager import TransactionManager
 
 
 @dataclass(slots=True)
@@ -35,6 +46,7 @@ class PartitionReplicaSet:
         replicas: dict[int, Replica],
         clock: Clock,
         config: MiniKafkaConfig,
+        transactions: TransactionManager,
     ) -> None:
         self.topic_partition = topic_partition
         self.leader_id = metadata.leader_id
@@ -42,6 +54,7 @@ class PartitionReplicaSet:
         self.replicas = replicas
         self.clock = clock
         self.config = config
+        self.transactions = transactions
         leader_leo = self.leader.leo
         self._isr = {
             broker_id
@@ -191,6 +204,12 @@ class PartitionReplicaSet:
         leader_leo = self.leader.leo
         next_isr = {self.leader_id}
         for follower in self.followers:
+            # Kafka's current ISR liveness control is
+            # replica.lag.time.max.ms. MiniKafka also keeps an explicit offset
+            # cap (like the removed replica.lag.max.messages) so a deterministic
+            # lab can evict a follower without sleeping. Requiring the follower
+            # to cover HW prevents an ISR re-entry from shrinking the committed
+            # prefix; all three conditions are intentionally visible here.
             within_offset = (
                 leader_leo - follower.leo
                 <= self.config.replica_lag_max_offsets
@@ -225,6 +244,10 @@ class PartitionReplicaSet:
         for waiter in self._ack_waiters:
             if waiter.future.done():
                 continue
+            # This is the post-append half of Kafka's acks=all plus
+            # min.insync.replicas contract. Fail immediately when the ISR can
+            # no longer satisfy that durability promise instead of leaving the
+            # producer future pending forever.
             if len(self._isr) < self.config.min_insync_replicas:
                 waiter.future.set_exception(
                     NotEnoughReplicasAfterAppend(
@@ -247,9 +270,53 @@ class PartitionReplicaSet:
         max_records: int,
         isolation: IsolationLevel = IsolationLevel.READ_UNCOMMITTED,
     ) -> tuple[LogRecord, ...]:
-        del isolation
-        return self.leader.log.fetch(
-            offset,
-            max_records,
-            end_offset=self.high_watermark,
+        if isolation is IsolationLevel.READ_UNCOMMITTED:
+            return self.leader.log.fetch(
+                offset,
+                max_records,
+                end_offset=self.high_watermark,
+            )
+        if max_records < 0:
+            raise ValueError("max_records cannot be negative")
+        end_offset = self.transactions.last_stable_offset(
+            self.topic_partition,
+            self.high_watermark,
         )
+        batches = self.leader.log.read_batches(
+            offset,
+            2**63 - 1,
+            end_offset=end_offset,
+        )
+        if max_records == 0:
+            return ()
+        records: list[LogRecord] = []
+        for batch in batches:
+            if batch.base_offset is None or batch.control is not None:
+                continue
+            if (
+                batch.transactional_id is not None
+                and not self.transactions.is_committed(batch.transactional_id)
+            ):
+                continue
+            if batch.offset_deltas is None:
+                continue
+            for delta, record in zip(
+                batch.offset_deltas,
+                batch.records,
+                strict=True,
+            ):
+                record_offset = batch.base_offset + delta
+                if record_offset < offset or record_offset >= end_offset:
+                    continue
+                records.append(
+                    LogRecord(
+                        offset=record_offset,
+                        key=record.key,
+                        value=record.value,
+                        timestamp_ms=record.timestamp_ms,
+                        headers=record.headers,
+                    )
+                )
+                if len(records) == max_records:
+                    return tuple(records)
+        return tuple(records)

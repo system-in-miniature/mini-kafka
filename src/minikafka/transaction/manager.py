@@ -95,7 +95,7 @@ class TransactionManager:
             (Record(key, value, self.cluster.clock.now_ms()),),
             transactional_id=data.transaction_id,
         )
-        result = await self.cluster.append_batch(tp, batch, AckMode.LEADER)
+        result = await self.cluster.append_batch(tp, batch, AckMode.ALL)
         data.partitions.add(tp)
         if result.base_offset is not None:
             data.first_offsets.setdefault(tp, result.base_offset)
@@ -112,7 +112,7 @@ class TransactionManager:
                     transaction_id=data.transaction_id,
                     control=ControlType.COMMIT,
                 ),
-                AckMode.LEADER,
+                AckMode.ALL,
             )
         await self.cluster.offsets.commit_many(data.staged_offsets)
         data.state = TransactionState.COMPLETE_COMMIT
@@ -129,7 +129,7 @@ class TransactionManager:
                     transaction_id=data.transaction_id,
                     control=ControlType.ABORT,
                 ),
-                AckMode.LEADER,
+                AckMode.ALL,
             )
         data.staged_offsets.clear()
         data.state = TransactionState.COMPLETE_ABORT

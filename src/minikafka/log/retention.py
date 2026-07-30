@@ -21,27 +21,25 @@ class RetentionManager:
             raise ValueError("retention_bytes must be positive")
 
         closed = list(log.closed_segments)
-        selected: set[int] = set()
+        selected = []
         if retention_ms is not None:
             boundary = self.clock.now_ms() - retention_ms
-            selected.update(
-                segment.base_offset
-                for segment in closed
-                if segment.max_timestamp_ms < boundary
-            )
+            for segment in closed:
+                if segment.max_timestamp_ms >= boundary:
+                    break
+                selected.append(segment)
 
         if retention_bytes is not None:
             total = log.size_bytes - sum(
                 segment.total_size_bytes
-                for segment in closed
-                if segment.base_offset in selected
+                for segment in selected
             )
-            for segment in closed:
+            for segment in closed[len(selected):]:
                 if total <= retention_bytes:
                     break
-                if segment.base_offset in selected:
-                    continue
-                selected.add(segment.base_offset)
+                selected.append(segment)
                 total -= segment.total_size_bytes
 
-        return log.delete_closed_segments(tuple(sorted(selected)))
+        return log.delete_closed_segments(
+            tuple(segment.base_offset for segment in selected)
+        )

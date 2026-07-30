@@ -64,11 +64,11 @@ class BrokerCluster:
             config.data_dir / "producer-identities.json"
         )
         self._replica_sets: dict[TopicPartition, PartitionReplicaSet] = {}
-        self._build_replica_sets()
         self.transactions = TransactionManager(
             self,
             TransactionJournal(config.data_dir / "transactions.journal"),
         )
+        self._build_replica_sets()
         self.state = LifecycleState.RUNNING
         self.failure_injector = FailureInjector()
         self._terminal_error: BaseException | None = None
@@ -372,6 +372,7 @@ class BrokerCluster:
             },
             self.clock,
             self.config,
+            self.transactions,
         )
 
     def _build_replica_sets(self) -> None:

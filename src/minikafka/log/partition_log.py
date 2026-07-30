@@ -259,6 +259,14 @@ class PartitionLog:
             )
         if not requested:
             return ()
+        expected_prefix = {
+            segment.base_offset
+            for segment in self.closed_segments[:len(requested)]
+        }
+        if requested != expected_prefix:
+            raise ValueError(
+                "retention can delete a continuous prefix of closed segments only"
+            )
         removed = [
             segment
             for segment in self._segments[:-1]
