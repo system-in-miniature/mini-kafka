@@ -1,13 +1,12 @@
-# MiniKafka 教程
+# 快速开始
 
-> [English](../index.md) · 中文快速开始
+> [English quick start](../quickstart.md) · 中文快速开始
+
+先安装 MiniKafka 并运行一个确定性的故障实验，再继续阅读架构与行为参考资料。
 
 MiniKafka 是一个直接 API 优先（direct-first）的 Python 参考实现，用一个小型、
 可执行的系统呈现 Kafka 最有辨识度的领域语义：分区追加日志、偏移量、消费组、
 复制、高水位、幂等写入与事务。它用于学习这些机制，不兼容 Kafka 线协议。
-
-English summary: MiniKafka makes Kafka's core data-plane mechanisms observable
-in a small executable model; it is not a wire-compatible broker.
 
 ## 安装
 
@@ -31,8 +30,10 @@ uv run python -m minikafka.labs.leader_failure
 会出现 `records after failover: 0`。这把 Kafka 确认级别的持久性权衡压缩成了
 一个确定性的双代理模拟。
 
-接着阅读[架构总览](architecture.md)，再把机制逐项映射到
-[Apache Kafka](kafka-mapping.md)。
-
 完整 API、功能范围和验证命令见
 [仓库中文 README](https://github.com/system-in-miniature/mini-kafka/blob/main/README.zh-CN.md)。
+
+## 下一步
+
+继续阅读[架构总览](architecture.md)，了解实验中的每一步分别落在代码库的
+什么位置。

@@ -1,7 +1,5 @@
 # 动手实验
 
-> [English](../labs-guide.md) · 中文版
-
 先在仓库根目录安装一次：
 
 ```bash
@@ -55,3 +53,7 @@ overlap after refresh: False
 ```bash
 uv run pytest -q
 ```
+
+## 下一步
+
+使用[差异与证据](behavior-matrix.md)，将观察到的行为连接到聚焦的可执行测试。

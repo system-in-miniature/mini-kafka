@@ -1,5 +1,3 @@
-> **Language**: English | [简体中文](zh/behavior-matrix.md)
-
 # MiniKafka behavior matrix
 
 This matrix binds each promised semantic to executable evidence.
@@ -28,3 +26,8 @@ This matrix binds each promised semantic to executable evidence.
 
 The JSON/TCP adapter proves boundary translation only. The direct API remains
 the authoritative route for core and failure-semantics tests.
+
+## Next step
+
+Continue with the [tutorial contents](tutorial/index.md) for the
+chapter-by-chapter learning path through these mechanisms.

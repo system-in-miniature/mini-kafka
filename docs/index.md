@@ -1,56 +1,40 @@
-# MiniKafka Tutorial / MiniKafka 教程
+# MiniKafka
 
-> English quick start / 英文快速开始 · [Chinese edition / 中文版](zh/index.md)
+MiniKafka is a compact, executable Python model for studying Kafka's core
+data-plane mechanisms. It favors a direct API and deterministic experiments
+over wire compatibility.
 
-MiniKafka is a direct-first Python reference implementation of Kafka's most
-distinctive domain semantics: partitioned append-only logs, offsets, consumer
-groups, replication, high watermarks, idempotence, and transactions. It is a
-small executable system for studying those mechanisms, not a Kafka
-wire-compatible broker.
+MiniKafka 是一个紧凑、可运行的 Python 教学模型，用于理解 Kafka 的核心数据平面
+机制。它优先采用直接 API 与确定性实验，不追求线协议兼容。
 
-MiniKafka 是一个直接 API 优先（direct-first）的 Python 参考实现，用一个小型、
-可执行的系统呈现 Kafka 最有辨识度的领域语义：分区追加日志、偏移量、消费组、
-复制、高水位、幂等写入与事务。它用于学习这些机制，不兼容 Kafka 线协议。
+## Start here / 从这里开始
 
-## Install / 安装
+- [English quick start](quickstart.md)
+- [中文快速开始](zh/index.md)
+- [English tutorial contents](tutorial/index.md)
+- [中文教程目录](zh/tutorial/index.md)
 
-You need Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+## Documentation map / 文档地图
 
-需要 Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)。
+| Destination / 页面 | Purpose / 用途 |
+| --- | --- |
+| Quick Start / 快速开始 | Install MiniKafka and run one failure experiment. / 安装 MiniKafka，并运行第一个故障实验。 |
+| Architecture Tour / 架构总览 | Follow one record through storage, replication, and consumption. / 跟踪一条记录如何穿过存储、复制与消费路径。 |
+| MiniKafka → Kafka Mapping / 映射 | Separate equivalent mechanisms from deliberate simplifications and semantic opposites. / 区分等价机制、有意简化与语义相反。 |
+| Hands-on Labs / 动手实验 | Reproduce acknowledged-write loss and consumer-group rebalance. / 复现已确认写入丢失与消费组再均衡。 |
+| Differences and Evidence / 差异与证据 | Bind behavioral claims to executable tests. / 将行为声明绑定到可执行测试证据。 |
 
-```bash
-git clone https://github.com/system-in-miniature/mini-kafka.git
-cd MiniKafka
-uv sync
-```
+## Recommended order / 推荐顺序
 
-## First experiment / 第一个实验
+Quick Start → Architecture → Mapping → Labs → Differences and Evidence
 
-Run the acknowledged-write-loss lab:
+快速开始 → 架构总览 → 映射 → 动手实验 → 差异与证据
 
-运行“已确认写入丢失”实验：
+## Scope / 项目边界
 
-```bash
-uv run python -m minikafka.labs.leader_failure
-```
+MiniKafka is a teaching implementation, not a Kafka-compatible broker. Use the
+mapping and evidence pages before transferring an observed behavior to
+production Kafka.
 
-The producer first receives an acknowledgement for offset `0` with `acks=1`.
-After the unreplicated leader is replaced, the lab prints
-`records after failover: 0`. This is the durability trade-off behind Kafka's
-acknowledgement settings, made deterministic in a two-broker simulation.
-
-生产者先以 `acks=1` 收到偏移量 `0` 的确认；尚未复制的领导者被替换后，输出中
-会出现 `records after failover: 0`。这把 Kafka 确认级别的持久性权衡压缩成了
-一个确定性的双代理模拟。
-
-Continue with the [architecture tour](architecture.md), then compare each
-mechanism with [Apache Kafka](kafka-mapping.md).
-
-接着阅读[架构总览](architecture.md)，再把机制逐项映射到
-[Apache Kafka](kafka-mapping.md)。
-
-For the full API, feature list, scope, and verification commands, read the
-[repository README](https://github.com/system-in-miniature/mini-kafka/blob/main/README.md).
-
-完整 API、功能范围和验证命令见
-[仓库中文 README](https://github.com/system-in-miniature/mini-kafka/blob/main/README.zh-CN.md)。
+MiniKafka 是教学实现，不是 Kafka 兼容代理。将观察到的行为迁移到生产 Kafka
+之前，请先核对映射与证据页面。

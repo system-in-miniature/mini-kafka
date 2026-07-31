@@ -1,5 +1,3 @@
-> **Language**: English | [简体中文](zh/kafka-mapping.md)
-
 # MiniKafka → Apache Kafka mapping
 
 MiniKafka is a teaching model of Kafka's data plane, not a compatible broker.
@@ -104,3 +102,8 @@ Then read each adjacent simplification before transferring the idea to a real
 Kafka deployment. Rows marked **Semantically opposite** are warnings: the
 code is useful for exposing a failure boundary, but its failover truncation
 must not be treated as Kafka behavior.
+
+## Next step
+
+Run the [Hands-on Labs](labs-guide.md) to observe two of these boundaries
+through executable failure scenarios.

@@ -17,8 +17,9 @@ theme:
     - content.code.copy
 
 nav:
-  - Home: index.md
+  - Home / 首页: index.md
   - English:
+      - Quick Start: quickstart.md
       - Tutorial:
           - Contents: tutorial/index.md
           - "01 · Meet MiniKafka": tutorial/01-getting-started.md
@@ -38,6 +39,7 @@ nav:
           - Differences and Evidence: behavior-matrix.md
           - Design History Archive: superpowers/README.md
   - 简体中文:
+      - 快速开始: zh/index.md
       - 教程:
           - 目录: zh/tutorial/index.md
           - "01 · 认识 MiniKafka": zh/tutorial/01-getting-started.md
@@ -51,7 +53,6 @@ nav:
           - "09 · 投递语义实验课": zh/tutorial/09-delivery-semantics.md
           - "10 · 协议层与方法论": zh/tutorial/10-protocol-and-beyond.md
       - 参考资料:
-          - 快速开始: zh/index.md
           - 架构总览: zh/architecture.md
           - "MiniKafka → Kafka 映射": zh/kafka-mapping.md
           - 动手实验: zh/labs-guide.md

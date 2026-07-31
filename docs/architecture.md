@@ -1,7 +1,5 @@
 # Architecture Tour
 
-> English · [中文版](zh/architecture.md)
-
 MiniKafka keeps transport outside the semantic core. Most experiments call the
 Direct API, so the main path is visible without sockets:
 
@@ -34,3 +32,8 @@ Read the repository in this order:
 The next chapter gives the graded
 [MiniKafka → Apache Kafka mapping](kafka-mapping.md). The
 [behavior matrix](behavior-matrix.md) connects observable claims to tests.
+
+## Next step
+
+Continue with the [MiniKafka → Apache Kafka mapping](kafka-mapping.md) to
+separate source-shaped invariants from deliberate simplifications.

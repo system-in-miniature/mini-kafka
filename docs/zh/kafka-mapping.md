@@ -1,5 +1,3 @@
-> **语言**: [English](../kafka-mapping.md) | 简体中文
-
 # MiniKafka → Apache Kafka 映射
 
 MiniKafka 是 Kafka 数据平面的教学模型，而非兼容代理。本指南区分两类机制：
@@ -101,3 +99,7 @@ MiniKafka 是 Kafka 数据平面的教学模型，而非兼容代理。本指南
 Kafka 部署之前，阅读每一项相邻的简化。标记为
 **语义相反（Semantically opposite）**的行属于警告：这些代码有助于揭示故障
 边界，但其故障转移截断行为不得被视为 Kafka 的行为。
+
+## 下一步
+
+运行[动手实验](labs-guide.md)，通过可执行的故障场景观察其中两个边界。

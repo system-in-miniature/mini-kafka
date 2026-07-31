@@ -1,7 +1,5 @@
 # 架构总览
 
-> [English](../architecture.md) · 中文版
-
 MiniKafka 将传输层放在语义核心之外。大多数实验直接调用 Python API，因此无需
 套接字也能观察主要路径：
 
@@ -31,3 +29,8 @@ Producer
 
 下一章给出分级的 [MiniKafka → Apache Kafka 映射](kafka-mapping.md)；
 [行为矩阵](behavior-matrix.md)则把可观察声明连接到测试证据。
+
+## 下一步
+
+继续阅读 [MiniKafka → Apache Kafka 映射](kafka-mapping.md)，区分与源码同形的
+核心不变量和教学项目有意保留的简化。

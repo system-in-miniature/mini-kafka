@@ -1,7 +1,5 @@
 # Hands-on Labs
 
-> English · [中文版](zh/labs-guide.md)
-
 Install the project once from the repository root:
 
 ```bash
@@ -59,3 +57,8 @@ Use the [behavior matrix](behavior-matrix.md) to choose a focused test, or run:
 ```bash
 uv run pytest -q
 ```
+
+## Next step
+
+Use [Differences and Evidence](behavior-matrix.md) to connect the observed
+behavior to focused executable tests.
