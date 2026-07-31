@@ -11,48 +11,51 @@ theme:
   favicon: assets/brand/avatar.svg
   language: en
   features:
+    - navigation.tabs
     - navigation.sections
     - navigation.top
     - content.code.copy
 
 nav:
-  - Tutorial:
-      - Contents: tutorial/index.md
-      - "01 · Meet MiniKafka": tutorial/01-getting-started.md
-      - "02 · The Log: Foundation of Everything": tutorial/02-the-log.md
-      - "03 · Retention and Compaction": tutorial/03-retention-compaction.md
-      - "04 · The Producer": tutorial/04-producer.md
-      - "05 · Replication I: Followers and Watermarks": tutorial/05-replication-basics.md
-      - "06 · Replication II: ISR and Fencing": tutorial/06-isr-and-fencing.md
-      - "07 · Consumer Groups": tutorial/07-consumer-groups.md
-      - "08 · Transactions": tutorial/08-transactions.md
-      - "09 · Delivery Semantics Lab": tutorial/09-delivery-semantics.md
-      - "10 · Protocol and Beyond": tutorial/10-protocol-and-beyond.md
-  - 中文教程:
-      - 目录: zh/tutorial/index.md
-      - "01 · 认识 MiniKafka": zh/tutorial/01-getting-started.md
-      - "02 · 日志：一切的地基": zh/tutorial/02-the-log.md
-      - "03 · 保留与压实": zh/tutorial/03-retention-compaction.md
-      - "04 · 生产者": zh/tutorial/04-producer.md
-      - "05 · 复制 I：追随与水位": zh/tutorial/05-replication-basics.md
-      - "06 · 复制 II：ISR 与栅栏": zh/tutorial/06-isr-and-fencing.md
-      - "07 · 消费组": zh/tutorial/07-consumer-groups.md
-      - "08 · 事务": zh/tutorial/08-transactions.md
-      - "09 · 投递语义实验课": zh/tutorial/09-delivery-semantics.md
-      - "10 · 协议层与方法论": zh/tutorial/10-protocol-and-beyond.md
-  - Reference:
-      - "Quick Start": index.md
-      - "Architecture": architecture.md
-      - "MiniKafka → Kafka Mapping": kafka-mapping.md
-      - "Hands-on Labs": labs-guide.md
-      - "Differences and Evidence": behavior-matrix.md
-      - "Design History Archive": superpowers/README.md
-  - 中文参考资料:
-      - 快速开始: zh/index.md
-      - 架构总览: zh/architecture.md
-      - "MiniKafka → Kafka 映射": zh/kafka-mapping.md
-      - 动手实验: zh/labs-guide.md
-      - 差异与证据: zh/behavior-matrix.md
+  - Home: index.md
+  - English:
+      - Tutorial:
+          - Contents: tutorial/index.md
+          - "01 · Meet MiniKafka": tutorial/01-getting-started.md
+          - "02 · The Log: Foundation of Everything": tutorial/02-the-log.md
+          - "03 · Retention and Compaction": tutorial/03-retention-compaction.md
+          - "04 · The Producer": tutorial/04-producer.md
+          - "05 · Replication I: Followers and Watermarks": tutorial/05-replication-basics.md
+          - "06 · Replication II: ISR and Fencing": tutorial/06-isr-and-fencing.md
+          - "07 · Consumer Groups": tutorial/07-consumer-groups.md
+          - "08 · Transactions": tutorial/08-transactions.md
+          - "09 · Delivery Semantics Lab": tutorial/09-delivery-semantics.md
+          - "10 · Protocol and Beyond": tutorial/10-protocol-and-beyond.md
+      - Reference:
+          - Architecture: architecture.md
+          - "MiniKafka → Kafka Mapping": kafka-mapping.md
+          - Hands-on Labs: labs-guide.md
+          - Differences and Evidence: behavior-matrix.md
+          - Design History Archive: superpowers/README.md
+  - 简体中文:
+      - 教程:
+          - 目录: zh/tutorial/index.md
+          - "01 · 认识 MiniKafka": zh/tutorial/01-getting-started.md
+          - "02 · 日志：一切的地基": zh/tutorial/02-the-log.md
+          - "03 · 保留与压实": zh/tutorial/03-retention-compaction.md
+          - "04 · 生产者": zh/tutorial/04-producer.md
+          - "05 · 复制 I：追随与水位": zh/tutorial/05-replication-basics.md
+          - "06 · 复制 II：ISR 与栅栏": zh/tutorial/06-isr-and-fencing.md
+          - "07 · 消费组": zh/tutorial/07-consumer-groups.md
+          - "08 · 事务": zh/tutorial/08-transactions.md
+          - "09 · 投递语义实验课": zh/tutorial/09-delivery-semantics.md
+          - "10 · 协议层与方法论": zh/tutorial/10-protocol-and-beyond.md
+      - 参考资料:
+          - 快速开始: zh/index.md
+          - 架构总览: zh/architecture.md
+          - "MiniKafka → Kafka 映射": zh/kafka-mapping.md
+          - 动手实验: zh/labs-guide.md
+          - 差异与证据: zh/behavior-matrix.md
 
 markdown_extensions:
   - admonition
