@@ -10,6 +10,7 @@ Build cross-mechanism domain closure and explain its boundary from executable fa
 
 ### Deliverable files
 
+- `pyproject.toml`
 - `src/minikafka/__init__.py`
 - `src/minikafka/consumer/group.py`
 - `src/minikafka/core/cluster.py`
@@ -26,6 +27,7 @@ Build cross-mechanism domain closure and explain its boundary from executable fa
 - `tests/test_sloc_report.py`
 - `tests/transaction/test_abort.py`
 - `tests/transaction/test_visibility.py`
+- `uv.lock`
 
 ### The problem at this point
 
@@ -102,7 +104,9 @@ The cluster routes transactional appends through replicated acknowledgement, rep
 
 The final integration checks are not new features: they prove that local invariants use the same authority and durability boundaries when composed.
 
+<!-- journey-file: pyproject.toml -->
 <!-- journey-file: src/minikafka/__init__.py -->
+<!-- journey-file: uv.lock -->
 #### Package and project support
 
 These files only keep the package boundary, dependencies, and test environment reproducible; they are supporting wiring rather than Kafka mechanism logic.
@@ -131,6 +135,7 @@ Explain the failure window this Stage closes, how runtime state changes, and whi
 
 ### 交付文件
 
+- `pyproject.toml`
 - `src/minikafka/__init__.py`
 - `src/minikafka/consumer/group.py`
 - `src/minikafka/core/cluster.py`
@@ -147,6 +152,7 @@ Explain the failure window this Stage closes, how runtime state changes, and whi
 - `tests/test_sloc_report.py`
 - `tests/transaction/test_abort.py`
 - `tests/transaction/test_visibility.py`
+- `uv.lock`
 
 ### 当前遇到的问题
 
@@ -223,7 +229,9 @@ Cluster 让事务 Append 经过复制确认；Replica Read 查询 Commit Marker�
 
 最终集成检查不是新功能；它证明局部不变量组合时仍使用同一套权威与持久性边界。
 
+<!-- journey-file: pyproject.toml -->
 <!-- journey-file: src/minikafka/__init__.py -->
+<!-- journey-file: uv.lock -->
 #### 包与工程支撑
 
 这些文件只负责让本 Stage 的包边界、依赖与测试环境可复现，不把脚手架误讲成 Kafka 机制。

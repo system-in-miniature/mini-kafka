@@ -14,5 +14,5 @@ title_en = "Package and project support"
 title_zh = "包与工程支撑"
 summary_en = "Keep package exports, dependencies, and the test environment reproducible."
 summary_zh = "保持包导出、依赖与测试环境可复现。"
-files = ["src/minikafka/__init__.py"]
+files = ["pyproject.toml", "src/minikafka/__init__.py", "uv.lock"]
 supporting = true
