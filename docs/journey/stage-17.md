@@ -1,0 +1,541 @@
+# Stage 17 · Thin JSON TCP adapter
+
+### Goal
+
+Build thin json tcp adapter and explain its boundary from executable failure, runtime state, and the critical statement.
+
+??? note "Deliverable files"
+    - `src/minikafka/adapters/json_tcp.py`
+    - `src/minikafka/errors.py`
+    - `tests/adapters/test_direct_tcp_parity.py`
+    - `tests/adapters/test_json_tcp.py`
+
+### The problem at this point
+
+A network API is useful only if framing and translation do not create a second, divergent broker semantics.
+
+### Test contract
+
+#### See the failure first
+
+Parity tests execute equivalent Direct and TCP operations; framing tests split stream input, carry binary values, and require typed domain errors in JSON responses.
+
+??? note "File diff: tests/adapters/test_direct_tcp_parity.py"
+    ```diff
+    diff --git a/tests/adapters/test_direct_tcp_parity.py b/tests/adapters/test_direct_tcp_parity.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..f144c59b494d77534572daa6dcf2ee092d3cf5a5
+    --- /dev/null
+    +++ b/tests/adapters/test_direct_tcp_parity.py
+    @@ -0,0 +1,41 @@
+    +import asyncio
+    +import base64
+    +import json
+    +from pathlib import Path
+    +
+    +import pytest
+    +
+    +from minikafka.adapters.json_tcp import JsonTcpServer
+    +from minikafka.clock import ManualClock
+    +from minikafka.config import MiniKafkaConfig
+    +from minikafka.core.cluster import BrokerCluster
+    +from minikafka.core.metadata import TopicPartition
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_tcp_adapter_translates_to_same_core_state(tmp_path: Path) -> None:
+    +    config = MiniKafkaConfig(data_dir=tmp_path)
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("events", 1, 1)
+    +        server = await JsonTcpServer.start(cluster, "127.0.0.1", 0)
+    +        reader, writer = await asyncio.open_connection(*server.address)
+    +        try:
+    +            writer.write(
+    +                json.dumps(
+    +                    {
+    +                        "operation": "produce",
+    +                        "topic": "events",
+    +                        "value_b64": base64.b64encode(b"adapter").decode(),
+    +                        "acks": "1",
+    +                    }
+    +                ).encode()
+    +                + b"\n"
+    +            )
+    +            await writer.drain()
+    +            assert json.loads(await reader.readline())["ok"] is True
+    +            direct = cluster.fetch(TopicPartition("events", 0), 0, 1)
+    +            assert direct[0].value == b"adapter"
+    +        finally:
+    +            writer.close()
+    +            await writer.wait_closed()
+    +            await server.close()
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+Parity tests execute equivalent Direct and TCP operations; framing tests split stream input, carry binary values, and require typed domain errors in JSON responses.
+
+**Key test statement**
+
+```python
+assert json.loads(await reader.readline())["ok"] is True
+```
+
+This assertion binds the externally visible result to the internal durability or authority boundary, rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the safety, ordering, visibility, or recovery boundary introduced by this Stage.
+
+??? note "File diff: tests/adapters/test_json_tcp.py"
+    ```diff
+    diff --git a/tests/adapters/test_json_tcp.py b/tests/adapters/test_json_tcp.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..29ed5e190c04affd66a8365593358179880b2d5e
+    --- /dev/null
+    +++ b/tests/adapters/test_json_tcp.py
+    @@ -0,0 +1,91 @@
+    +import asyncio
+    +import base64
+    +import json
+    +from pathlib import Path
+    +
+    +import pytest
+    +
+    +from minikafka.adapters.json_tcp import JsonTcpServer
+    +from minikafka.clock import ManualClock
+    +from minikafka.config import MiniKafkaConfig
+    +from minikafka.core.cluster import BrokerCluster
+    +
+    +
+    +async def exchange(
+    +    reader: asyncio.StreamReader,
+    +    writer: asyncio.StreamWriter,
+    +    request: dict[str, object],
+    +) -> dict[str, object]:
+    +    writer.write(json.dumps(request).encode() + b"\n")
+    +    await writer.drain()
+    +    return json.loads(await reader.readline())
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_tcp_produce_and_fetch_binary_values(tmp_path: Path) -> None:
+    +    config = MiniKafkaConfig(data_dir=tmp_path)
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        server = await JsonTcpServer.start(cluster, "127.0.0.1", 0)
+    +        reader, writer = await asyncio.open_connection(*server.address)
+    +        try:
+    +            created = await exchange(
+    +                reader,
+    +                writer,
+    +                {
+    +                    "operation": "create_topic",
+    +                    "topic": "events",
+    +                    "partitions": 1,
+    +                    "replication_factor": 1,
+    +                },
+    +            )
+    +            assert created["ok"] is True
+    +            produced = await exchange(
+    +                reader,
+    +                writer,
+    +                {
+    +                    "operation": "produce",
+    +                    "topic": "events",
+    +                    "key_b64": base64.b64encode(b"\x00key").decode(),
+    +                    "value_b64": base64.b64encode(b"\xffvalue").decode(),
+    +                    "acks": "1",
+    +                },
+    +            )
+    +            assert produced["offset"] == 0
+    +            fetched = await exchange(
+    +                reader,
+    +                writer,
+    +                {
+    +                    "operation": "fetch",
+    +                    "topic": "events",
+    +                    "partition": 0,
+    +                    "offset": 0,
+    +                    "max_records": 10,
+    +                },
+    +            )
+    +            assert base64.b64decode(fetched["records"][0]["value_b64"]) == (
+    +                b"\xffvalue"
+    +            )
+    +        finally:
+    +            writer.close()
+    +            await writer.wait_closed()
+    +            await server.close()
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_domain_errors_are_typed_json(tmp_path: Path) -> None:
+    +    config = MiniKafkaConfig(data_dir=tmp_path)
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        server = await JsonTcpServer.start(cluster, "127.0.0.1", 0)
+    +        reader, writer = await asyncio.open_connection(*server.address)
+    +        try:
+    +            reply = await exchange(
+    +                reader,
+    +                writer,
+    +                {"operation": "metadata", "topic": "missing"},
+    +            )
+    +            assert reply["ok"] is False
+    +            assert reply["code"] == "UNKNOWN_TOPIC"
+    +        finally:
+    +            writer.close()
+    +            await writer.wait_closed()
+    +            await server.close()
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+Parity tests execute equivalent Direct and TCP operations; framing tests split stream input, carry binary values, and require typed domain errors in JSON responses.
+
+**Key test statement**
+
+```python
+assert json.loads(await reader.readline())["ok"] is True
+```
+
+This assertion binds the externally visible result to the internal durability or authority boundary, rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the safety, ordering, visibility, or recovery boundary introduced by this Stage.
+
+### Basic concepts
+
+The adapter uses a length-prefixed JSON envelope. Binary fields require explicit encoding. Dispatch translates requests to the Direct semantic core and maps domain failures back to stable wire errors.
+
+### Why this mechanism is necessary
+
+A network API is useful only if framing and translation do not create a second, divergent broker semantics. Without an explicit contract, every later mechanism would depend on accidental behavior.
+
+### Runtime mental model
+
+The server reads an exact frame length, validates request shape, calls existing cluster operations, and serializes results without owning storage or replication decisions.
+
+### Mechanism blocks
+
+#### Thin JSON TCP adapter mechanism
+
+The server reads an exact frame length, validates request shape, calls existing cluster operations, and serializes results without owning storage or replication decisions.
+
+??? note "File diff: src/minikafka/adapters/json_tcp.py"
+    ```diff
+    diff --git a/src/minikafka/adapters/json_tcp.py b/src/minikafka/adapters/json_tcp.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..8a0fa3e83d7d959959630f5da89d68ac9f2036bc
+    --- /dev/null
+    +++ b/src/minikafka/adapters/json_tcp.py
+    @@ -0,0 +1,250 @@
+    +from __future__ import annotations
+    +
+    +import asyncio
+    +import base64
+    +import binascii
+    +import json
+    +from typing import Any, Self
+    +
+    +from minikafka.core.batch import RecordBatch
+    +from minikafka.core.metadata import TopicPartition
+    +from minikafka.core.record import Record
+    +from minikafka.errors import (
+    +    FrameTooLarge,
+    +    InvalidRequest,
+    +    MiniKafkaError,
+    +)
+    +from minikafka.replication.model import AckMode, IsolationLevel
+    +
+    +
+    +class JsonTcpServer:
+    +    def __init__(
+    +        self,
+    +        cluster: object,
+    +        server: asyncio.Server,
+    +        *,
+    +        max_frame_bytes: int,
+    +    ) -> None:
+    +        self.cluster = cluster
+    +        self._server = server
+    +        self.max_frame_bytes = max_frame_bytes
+    +
+    +    @classmethod
+    +    async def start(
+    +        cls,
+    +        cluster: object,
+    +        host: str,
+    +        port: int,
+    +        *,
+    +        max_frame_bytes: int = 1_048_576,
+    +    ) -> Self:
+    +        instance: Self | None = None
+    +
+    +        async def handler(
+    +            reader: asyncio.StreamReader,
+    +            writer: asyncio.StreamWriter,
+    +        ) -> None:
+    +            if instance is not None:
+    +                await instance._serve(reader, writer)
+    +
+    +        server = await asyncio.start_server(
+    +            handler,
+    +            host,
+    +            port,
+    +            limit=max_frame_bytes + 1,
+    +        )
+    +        instance = cls(
+    +            cluster,
+    +            server,
+    +            max_frame_bytes=max_frame_bytes,
+    +        )
+    +        return instance
+    +
+    +    @property
+    +    def address(self) -> tuple[str, int]:
+    +        socket = self._server.sockets[0]
+    +        host, port = socket.getsockname()[:2]
+    +        return str(host), int(port)
+    +
+    +    async def close(self) -> None:
+    +        self._server.close()
+    +        await self._server.wait_closed()
+    +
+    +    async def _serve(
+    +        self,
+    +        reader: asyncio.StreamReader,
+    +        writer: asyncio.StreamWriter,
+    +    ) -> None:
+    +        try:
+    +            while True:
+    +                try:
+    +                    line = await reader.readline()
+    +                except ValueError:
+    +                    await self._write(writer, self._error(FrameTooLarge()))
+    +                    break
+    +                if not line:
+    +                    break
+    +                if len(line) > self.max_frame_bytes:
+    +                    await self._write(writer, self._error(FrameTooLarge()))
+    +                    break
+    +                try:
+    +                    request = json.loads(line)
+    +                    if not isinstance(request, dict):
+    +                        raise InvalidRequest("request must be a JSON object")
+    +                    response = await self.dispatch(request)
+    +                except MiniKafkaError as error:
+    +                    response = self._error(error)
+    +                except (
+    +                    ValueError,
+    +                    TypeError,
+    +                    KeyError,
+    +                    json.JSONDecodeError,
+    +                    binascii.Error,
+    +                ) as error:
+    +                    response = self._error(InvalidRequest(str(error)))
+    +                await self._write(writer, response)
+    +        finally:
+    +            writer.close()
+    +            await writer.wait_closed()
+    +
+    +    async def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
+    +        operation = request.get("operation")
+    +        if operation == "create_topic":
+    +            topic = await self.cluster.create_topic(
+    +                str(request["topic"]),
+    +                int(request["partitions"]),
+    +                int(request["replication_factor"]),
+    +            )
+    +            return {"ok": True, "topic": topic.name}
+    +        if operation == "metadata":
+    +            topic = await self.cluster.describe_topic(str(request["topic"]))
+    +            return {
+    +                "ok": True,
+    +                "topic": topic.name,
+    +                "partitions": [
+    +                    {
+    +                        "partition": metadata.partition,
+    +                        "leader_id": metadata.leader_id,
+    +                        "leader_epoch": metadata.leader_epoch,
+    +                        "replicas": list(metadata.replicas),
+    +                    }
+    +                    for metadata in topic.partitions.values()
+    +                ],
+    +            }
+    +        if operation == "produce":
+    +            topic = str(request["topic"])
+    +            partition = int(request.get("partition", 0))
+    +            batch = RecordBatch.unassigned(
+    +                (
+    +                    Record(
+    +                        self._decode_optional(request, "key_b64"),
+    +                        self._decode_optional(request, "value_b64"),
+    +                        self.cluster.clock.now_ms(),
+    +                    ),
+    +                )
+    +            )
+    +            result = await self.cluster.append_batch(
+    +                TopicPartition(topic, partition),
+    +                batch,
+    +                AckMode.parse(request.get("acks", "1")),
+    +            )
+    +            return {
+    +                "ok": True,
+    +                "partition": partition,
+    +                "offset": result.base_offset,
+    +            }
+    +        if operation == "fetch":
+    +            tp = TopicPartition(
+    +                str(request["topic"]),
+    +                int(request["partition"]),
+    +            )
+    +            isolation = IsolationLevel(
+    +                request.get("isolation", IsolationLevel.READ_UNCOMMITTED)
+    +            )
+    +            records = self.cluster.fetch(
+    +                tp,
+    +                int(request["offset"]),
+    +                int(request.get("max_records", 100)),
+    +                isolation,
+    +            )
+    +            return {
+    +                "ok": True,
+    +                "records": [
+    +                    {
+    +                        "offset": record.offset,
+    +                        "key_b64": self._encode_optional(record.key),
+    +                        "value_b64": self._encode_optional(record.value),
+    +                    }
+    +                    for record in records
+    +                ],
+    +            }
+    +        if operation == "join_group":
+    +            joined = await self.cluster.groups.join(
+    +                str(request["group_id"]),
+    +                str(request["member_id"]),
+    +                tuple(str(topic) for topic in request["topics"]),
+    +            )
+    +            return {
+    +                "ok": True,
+    +                "generation": joined.generation,
+    +                "assignment": [
+    +                    {"topic": tp.topic, "partition": tp.partition}
+    +                    for tp in joined.assignment
+    +                ],
+    +            }
+    +        if operation == "heartbeat":
+    +            await self.cluster.groups.heartbeat(
+    +                str(request["group_id"]),
+    +                str(request["member_id"]),
+    +                int(request["generation"]),
+    +            )
+    +            return {"ok": True}
+    +        if operation == "commit_offsets":
+    +            offsets = {
+    +                TopicPartition(str(item["topic"]), int(item["partition"])): int(
+    +                    item["offset"]
+    +                )
+    +                for item in request["offsets"]
+    +            }
+    +            await self.cluster.groups.commit(
+    +                str(request["group_id"]),
+    +                str(request["member_id"]),
+    +                int(request["generation"]),
+    +                offsets,
+    +            )
+    +            return {"ok": True}
+    +        raise InvalidRequest(f"unknown operation {operation!r}")
+    +
+    +    @staticmethod
+    +    def _decode_optional(
+    +        request: dict[str, Any],
+    +        name: str,
+    +    ) -> bytes | None:
+    +        value = request.get(name)
+    +        if value is None:
+    +            return None
+    +        return base64.b64decode(str(value), validate=True)
+    +
+    +    @staticmethod
+    +    def _encode_optional(value: bytes | None) -> str | None:
+    +        if value is None:
+    +            return None
+    +        return base64.b64encode(value).decode("ascii")
+    +
+    +    @staticmethod
+    +    def _error(error: MiniKafkaError) -> dict[str, Any]:
+    +        return {
+    +            "ok": False,
+    +            "code": error.code,
+    +            "message": str(error),
+    +        }
+    +
+    +    @staticmethod
+    +    async def _write(
+    +        writer: asyncio.StreamWriter,
+    +        response: dict[str, Any],
+    +    ) -> None:
+    +        writer.write(
+    +            json.dumps(response, separators=(",", ":")).encode() + b"\n"
+    +        )
+    +        await writer.drain()
+    ```
+
+??? note "File diff: src/minikafka/errors.py"
+    ```diff
+    diff --git a/src/minikafka/errors.py b/src/minikafka/errors.py
+    index 6fdc5a3ebf466c84b38018ae62e8644bf001b70d..e77dc31f1d95f0613cde7cb4eee935816fa110d6 100644
+    --- a/src/minikafka/errors.py
+    +++ b/src/minikafka/errors.py
+    @@ -95,3 +95,11 @@ class OutOfOrderSequence(MiniKafkaError):
+             super().__init__(f"expected sequence {expected}, got {actual}")
+             self.expected = expected
+             self.actual = actual
+    +
+    +
+    +class InvalidRequest(MiniKafkaError):
+    +    code = "INVALID_REQUEST"
+    +
+    +
+    +class FrameTooLarge(MiniKafkaError):
+    +    code = "FRAME_TOO_LARGE"
+    ```
+
+**What it is and why it appears**
+
+The adapter uses a length-prefixed JSON envelope. Binary fields require explicit encoding. Dispatch translates requests to the Direct semantic core and maps domain failures back to stable wire errors.
+
+**Runtime role**
+
+The server reads an exact frame length, validates request shape, calls existing cluster operations, and serializes results without owning storage or replication decisions.
+
+**Statement understanding**
+
+A transport handler may translate types but must not reimplement acknowledgement, visibility, or offset rules; parity evidence protects that boundary.
+
+### Verification evidence
+
+Run `uv run pytest -q $(cat journey/stages/17-json-tcp/tests.txt)`, then use Journey Check to compare the cumulative source with the canonical Stage.
+
+### Durable takeaways
+
+A transport handler may translate types but must not reimplement acknowledgement, visibility, or offset rules; parity evidence protects that boundary.
+
+### Explain it in your own words
+
+Explain the failure window this Stage closes, how runtime state changes, and which statement protects the boundary.
+
+### Textbook
+
+[Chapter 10](https://github.com/system-in-miniature/mini-kafka/blob/main/docs/tutorial/10-protocol-and-beyond.md)
+
+[Complete reference patch / 完整参考补丁](https://github.com/system-in-miniature/mini-kafka/blob/main/journey/stages/17-json-tcp/stage.patch)

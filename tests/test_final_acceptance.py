@@ -66,11 +66,13 @@ async def test_domain_closure_survives_rebalance_failover_and_restart(
         assert reopened.partition_metadata(tp).leader_id == follower_id
 
 
-def test_readme_states_adapter_and_course_boundaries() -> None:
+def test_readme_states_adapter_and_learning_boundaries() -> None:
     text = Path("README.md").read_text()
     assert "not Kafka wire-protocol compatible" in text
-    assert "Course material is separate" in text
     assert "Direct API" in text
+    assert "Mechanism Tutorial" in text
+    assert "Self-Guided Rebuild" in text
+    assert "Agent-Guided Rebuild" in text
 
 
 def test_behavior_matrix_names_executable_evidence() -> None:

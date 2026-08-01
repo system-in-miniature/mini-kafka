@@ -1,0 +1,1082 @@
+# Stage 20 · Cross-mechanism domain closure
+
+### Goal
+
+Build cross-mechanism domain closure and explain its boundary from executable failure, runtime state, and the critical statement.
+
+??? note "Deliverable files"
+    - `src/minikafka/__init__.py`
+    - `src/minikafka/consumer/group.py`
+    - `src/minikafka/core/cluster.py`
+    - `src/minikafka/labs/leader_failure.py`
+    - `src/minikafka/labs/rebalance.py`
+    - `src/minikafka/log/compaction.py`
+    - `src/minikafka/log/partition_log.py`
+    - `src/minikafka/log/retention.py`
+    - `src/minikafka/producer/state.py`
+    - `src/minikafka/replication/replica_set.py`
+    - `src/minikafka/transaction/manager.py`
+    - `tests/log/test_retention.py`
+    - `tests/test_final_acceptance.py`
+    - `tests/test_sloc_report.py`
+    - `tests/transaction/test_abort.py`
+    - `tests/transaction/test_visibility.py`
+
+### The problem at this point
+
+Individually correct features can still violate one another when transactions, retention, replication visibility, restart, and the public API meet.
+
+### Test contract
+
+#### See the failure first
+
+The final contracts combine rebalance, failover, restart, prefix retention, abort visibility, and prepared recovery; each test exposes a bug that isolated happy paths miss.
+
+??? note "File diff: tests/log/test_retention.py"
+    ```diff
+    diff --git a/tests/log/test_retention.py b/tests/log/test_retention.py
+    index d74962771fbc55472d2483f057566972891cbf3a..1afabf9f66c1ea759e6c423e43eccd51ae99dd29 100644
+    --- a/tests/log/test_retention.py
+    +++ b/tests/log/test_retention.py
+    @@ -32,6 +32,19 @@ def rolled_log(tmp_path: Path) -> PartitionLog:
+         return log
+
+
+    +def non_monotonic_log(tmp_path: Path) -> PartitionLog:
+    +    config = MiniKafkaConfig(
+    +        data_dir=tmp_path,
+    +        segment_max_bytes=80,
+    +        index_interval_bytes=1,
+    +    )
+    +    log = PartitionLog.open(tmp_path / "non-monotonic-0", config)
+    +    for timestamp in (250, 0, 0, 250):
+    +        append(log, b"x" * 20, timestamp)
+    +    assert len(log.closed_segments) >= 3
+    +    return log
+    +
+    +
+     def test_time_retention_deletes_closed_segments_only(tmp_path: Path) -> None:
+         log = rolled_log(tmp_path)
+         active_base = log.active.base_offset
+    @@ -47,6 +60,22 @@ def test_time_retention_deletes_closed_segments_only(tmp_path: Path) -> None:
+         log.close()
+
+
+    +def test_time_retention_stops_at_first_non_expired_segment(
+    +    tmp_path: Path,
+    +) -> None:
+    +    log = non_monotonic_log(tmp_path)
+    +
+    +    deleted = RetentionManager(ManualClock(300)).apply(
+    +        log,
+    +        retention_ms=100,
+    +        retention_bytes=None,
+    +    )
+    +
+    +    assert deleted == ()
+    +    assert tuple(segment.base_offset for segment in log.segments) == (0, 1, 2, 3)
+    +    log.close()
+    +
+    +
+     def test_size_retention_deletes_oldest_segments_first(tmp_path: Path) -> None:
+         log = rolled_log(tmp_path)
+         newest_closed = log.closed_segments[-1].base_offset
+    @@ -65,6 +94,18 @@ def test_size_retention_deletes_oldest_segments_first(tmp_path: Path) -> None:
+         log.close()
+
+
+    +def test_partition_log_rejects_non_prefix_segment_deletion(
+    +    tmp_path: Path,
+    +) -> None:
+    +    log = rolled_log(tmp_path)
+    +
+    +    with pytest.raises(ValueError, match="continuous prefix"):
+    +        log.delete_closed_segments((0, 2))
+    +
+    +    assert tuple(segment.base_offset for segment in log.segments) == (0, 1, 2, 3)
+    +    log.close()
+    +
+    +
+     def test_retention_result_survives_restart(tmp_path: Path) -> None:
+         log = rolled_log(tmp_path)
+         directory = log.directory
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The final contracts combine rebalance, failover, restart, prefix retention, abort visibility, and prepared recovery; each test exposes a bug that isolated happy paths miss.
+
+**Key test statement**
+
+```python
+assert len(log.closed_segments) >= 3
+```
+
+This assertion binds the externally visible result to the internal durability or authority boundary, rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the safety, ordering, visibility, or recovery boundary introduced by this Stage.
+
+??? note "File diff: tests/test_final_acceptance.py"
+    ```diff
+    diff --git a/tests/test_final_acceptance.py b/tests/test_final_acceptance.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..d5798fdc81c151ea3b048fe71c615cd86d33b244
+    --- /dev/null
+    +++ b/tests/test_final_acceptance.py
+    @@ -0,0 +1,85 @@
+    +import asyncio
+    +from pathlib import Path
+    +
+    +import pytest
+    +
+    +from minikafka import (
+    +    AckMode,
+    +    BrokerCluster,
+    +    IsolationLevel,
+    +    MiniKafkaConfig,
+    +    TopicPartition,
+    +)
+    +from minikafka.clock import ManualClock
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_domain_closure_survives_rebalance_failover_and_restart(
+    +    tmp_path: Path,
+    +) -> None:
+    +    config = MiniKafkaConfig(
+    +        data_dir=tmp_path,
+    +        broker_ids=(1, 2),
+    +        min_insync_replicas=2,
+    +        group_session_timeout_ms=10,
+    +    )
+    +    clock = ManualClock()
+    +    async with BrokerCluster.open(config, clock=clock) as cluster:
+    +        await cluster.create_topic("orders", 2, 2)
+    +        producer = cluster.producer(
+    +            acks=AckMode.ALL,
+    +            idempotent=True,
+    +            batch_size=1,
+    +        )
+    +        pending = producer.send(
+    +            "orders",
+    +            key=b"user-42",
+    +            value=b"created",
+    +        )
+    +        await asyncio.sleep(0)
+    +        await cluster.replicate_all_once()
+    +        metadata = await pending
+    +        tp = TopicPartition("orders", metadata.partition)
+    +
+    +        first = cluster.consumer(group_id="workers")
+    +        await first.subscribe(("orders",))
+    +        records = await first.poll(10)
+    +        assert [record.value for record in records] == [b"created"]
+    +        await first.commit()
+    +
+    +        clock.advance_ms(11)
+    +        assert await cluster.expire_group_members()
+    +        second = cluster.consumer(group_id="workers")
+    +        await second.subscribe(("orders",))
+    +        assert tp in second.assignment
+    +        follower_id = next(
+    +            broker_id
+    +            for broker_id in cluster.partition_metadata(tp).replicas
+    +            if broker_id != cluster.partition_metadata(tp).leader_id
+    +        )
+    +        await cluster.promote(tp, follower_id)
+    +
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as reopened:
+    +        assert await reopened.offsets.get("workers", tp) == (
+    +            records[-1].offset + 1
+    +        )
+    +        assert reopened.partition_metadata(tp).leader_id == follower_id
+    +
+    +
+    +def test_readme_states_adapter_and_course_boundaries() -> None:
+    +    text = Path("README.md").read_text()
+    +    assert "not Kafka wire-protocol compatible" in text
+    +    assert "Course material is separate" in text
+    +    assert "Direct API" in text
+    +
+    +
+    +def test_behavior_matrix_names_executable_evidence() -> None:
+    +    text = Path("docs/behavior-matrix.md").read_text()
+    +    assert "test_exact_retry_returns_original_offsets" in text
+    +    assert "test_old_leader_truncates_uncommitted_tail" in text
+    +    assert "test_output_and_input_offset_publish_together" in text
+    +
+    +
+    +def test_public_api_exports_semantic_types() -> None:
+    +    assert AckMode.ALL.value == "all"
+    +    assert IsolationLevel.READ_COMMITTED.value == "read_committed"
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The final contracts combine rebalance, failover, restart, prefix retention, abort visibility, and prepared recovery; each test exposes a bug that isolated happy paths miss.
+
+**Key test statement**
+
+```python
+assert len(log.closed_segments) >= 3
+```
+
+This assertion binds the externally visible result to the internal durability or authority boundary, rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the safety, ordering, visibility, or recovery boundary introduced by this Stage.
+
+??? note "File diff: tests/test_sloc_report.py"
+    ```diff
+    diff --git a/tests/test_sloc_report.py b/tests/test_sloc_report.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..6bef27f3b88ac508d3dd601b64c595daf9cd2421
+    --- /dev/null
+    +++ b/tests/test_sloc_report.py
+    @@ -0,0 +1,10 @@
+    +from pathlib import Path
+    +
+    +from tools.count_sloc import count_tree
+    +
+    +
+    +def test_sloc_report_counts_code_tests_and_docs() -> None:
+    +    report = count_tree(Path.cwd())
+    +    assert report["production"] > 0
+    +    assert report["tests"] > 0
+    +    assert report["docs"] > 0
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The final contracts combine rebalance, failover, restart, prefix retention, abort visibility, and prepared recovery; each test exposes a bug that isolated happy paths miss.
+
+**Key test statement**
+
+```python
+assert len(log.closed_segments) >= 3
+```
+
+This assertion binds the externally visible result to the internal durability or authority boundary, rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the safety, ordering, visibility, or recovery boundary introduced by this Stage.
+
+??? note "File diff: tests/transaction/test_abort.py"
+    ```diff
+    diff --git a/tests/transaction/test_abort.py b/tests/transaction/test_abort.py
+    index d8da0afd30ac675464d6d9d0b1a763b36e6455fb..caeaf16187701c7adc799c44a0e8b489b35d3248 100644
+    --- a/tests/transaction/test_abort.py
+    +++ b/tests/transaction/test_abort.py
+    @@ -1,3 +1,4 @@
+    +import asyncio
+     from pathlib import Path
+
+     import pytest
+    @@ -17,10 +18,41 @@ async def test_aborted_records_remain_hidden(tmp_path: Path) -> None:
+             tx = await cluster.transactions.begin("tx-2")
+             await tx.send("out", value=b"discard")
+             await tx.abort()
+    +        tp = TopicPartition("out", 0)
+
+             assert cluster.fetch(
+    -            TopicPartition("out", 0),
+    +            tp,
+                 0,
+                 10,
+                 IsolationLevel.READ_COMMITTED,
+             ) == ()
+    +        assert await cluster.replica_set(tp).fetch(
+    +            0,
+    +            10,
+    +            IsolationLevel.READ_COMMITTED,
+    +        ) == ()
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_abort_marker_waits_for_all_isr_replicas(
+    +    tmp_path: Path,
+    +) -> None:
+    +    config = MiniKafkaConfig(
+    +        data_dir=tmp_path,
+    +        broker_ids=(1, 2),
+    +        min_insync_replicas=2,
+    +    )
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("out", 1, 2)
+    +        tx = await cluster.transactions.begin("tx-abort-acks-all")
+    +        pending_send = asyncio.create_task(tx.send("out", value=b"aborted"))
+    +        await asyncio.sleep(0)
+    +        await cluster.replicate_all_once()
+    +        await pending_send
+    +
+    +        pending_abort = asyncio.create_task(tx.abort())
+    +        await asyncio.sleep(0)
+    +        assert not pending_abort.done()
+    +
+    +        await cluster.replicate_all_once()
+    +        await pending_abort
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The final contracts combine rebalance, failover, restart, prefix retention, abort visibility, and prepared recovery; each test exposes a bug that isolated happy paths miss.
+
+**Key test statement**
+
+```python
+assert len(log.closed_segments) >= 3
+```
+
+This assertion binds the externally visible result to the internal durability or authority boundary, rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the safety, ordering, visibility, or recovery boundary introduced by this Stage.
+
+??? note "File diff: tests/transaction/test_visibility.py"
+    ```diff
+    diff --git a/tests/transaction/test_visibility.py b/tests/transaction/test_visibility.py
+    index a82cd2c7737d10196e27d99f4669b7a023533a1b..2366f5d6c399562119ea52c97a79907e6c53c6cf 100644
+    --- a/tests/transaction/test_visibility.py
+    +++ b/tests/transaction/test_visibility.py
+    @@ -1,12 +1,15 @@
+    +import asyncio
+     from pathlib import Path
+
+     import pytest
+
+     from minikafka.clock import ManualClock
+     from minikafka.config import MiniKafkaConfig
+    +from minikafka.core.batch import RecordBatch
+     from minikafka.core.cluster import BrokerCluster
+     from minikafka.core.metadata import TopicPartition
+    -from minikafka.replication.model import IsolationLevel
+    +from minikafka.core.record import Record
+    +from minikafka.replication.model import AckMode, IsolationLevel
+
+
+     @pytest.mark.asyncio
+    @@ -30,3 +33,83 @@ async def test_read_committed_waits_for_commit_marker(tmp_path: Path) -> None:
+             )] == [b"pending"]
+             assert all(batch.control is not None for batch in
+                        cluster.leader_log(tp).all_batches()[1:])
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_transaction_data_waits_for_all_isr_replicas(
+    +    tmp_path: Path,
+    +) -> None:
+    +    config = MiniKafkaConfig(
+    +        data_dir=tmp_path,
+    +        broker_ids=(1, 2),
+    +        min_insync_replicas=2,
+    +    )
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("out", 1, 2)
+    +        tx = await cluster.transactions.begin("tx-data-acks-all")
+    +        pending = asyncio.create_task(tx.send("out", value=b"replicated"))
+    +        await asyncio.sleep(0)
+    +
+    +        assert not pending.done()
+    +
+    +        await cluster.replicate_all_once()
+    +        await pending
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_commit_marker_waits_for_all_isr_replicas(
+    +    tmp_path: Path,
+    +) -> None:
+    +    config = MiniKafkaConfig(
+    +        data_dir=tmp_path,
+    +        broker_ids=(1, 2),
+    +        min_insync_replicas=2,
+    +    )
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("out", 1, 2)
+    +        tx = await cluster.transactions.begin("tx-commit-acks-all")
+    +        pending_send = asyncio.create_task(tx.send("out", value=b"committed"))
+    +        await asyncio.sleep(0)
+    +        await cluster.replicate_all_once()
+    +        await pending_send
+    +
+    +        pending_commit = asyncio.create_task(tx.commit())
+    +        await asyncio.sleep(0)
+    +        assert not pending_commit.done()
+    +
+    +        await cluster.replicate_all_once()
+    +        await pending_commit
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_replica_set_read_committed_uses_last_stable_offset(
+    +    tmp_path: Path,
+    +) -> None:
+    +    config = MiniKafkaConfig(data_dir=tmp_path)
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("out", 1, 1)
+    +        tp = TopicPartition("out", 0)
+    +        replica_set = cluster.replica_set(tp)
+    +        tx = await cluster.transactions.begin("tx-direct-fetch")
+    +        await tx.send("out", value=b"pending")
+    +        await replica_set.append(
+    +            RecordBatch.unassigned((Record(None, b"later", 0),)),
+    +            AckMode.LEADER,
+    +        )
+    +
+    +        assert await replica_set.fetch(
+    +            0,
+    +            10,
+    +            IsolationLevel.READ_COMMITTED,
+    +        ) == ()
+    +
+    +        await tx.commit()
+    +
+    +        assert [
+    +            record.value
+    +            for record in await replica_set.fetch(
+    +                0,
+    +                10,
+    +                IsolationLevel.READ_COMMITTED,
+    +            )
+    +        ] == [b"pending", b"later"]
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+The final contracts combine rebalance, failover, restart, prefix retention, abort visibility, and prepared recovery; each test exposes a bug that isolated happy paths miss.
+
+**Key test statement**
+
+```python
+assert len(log.closed_segments) >= 3
+```
+
+This assertion binds the externally visible result to the internal durability or authority boundary, rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the safety, ordering, visibility, or recovery boundary introduced by this Stage.
+
+### Basic concepts
+
+Domain closure means shared invariants survive composition. Transactional writes require `acks=all`; retention deletes only prefixes; `read_committed` uses replica-level transaction knowledge; public exports name the supported semantic surface.
+
+### Why this mechanism is necessary
+
+Individually correct features can still violate one another when transactions, retention, replication visibility, restart, and the public API meet. Without an explicit contract, every later mechanism would depend on accidental behavior.
+
+### Runtime mental model
+
+The cluster routes transactional appends through replicated acknowledgement, replica reads consult commit markers, retention advances one log-start boundary, and restart restores metadata, offsets, producer, and transaction state.
+
+### Mechanism blocks
+
+#### Cross-mechanism domain closure mechanism
+
+The cluster routes transactional appends through replicated acknowledgement, replica reads consult commit markers, retention advances one log-start boundary, and restart restores metadata, offsets, producer, and transaction state.
+
+??? note "File diff: src/minikafka/consumer/group.py"
+    ```diff
+    diff --git a/src/minikafka/consumer/group.py b/src/minikafka/consumer/group.py
+    index fc42fd5e09857c6164d6e522ffa85df8cf1cc35d..f711f2df816c35bc321f7e581ac6f29b2abbaaf4 100644
+    --- a/src/minikafka/consumer/group.py
+    +++ b/src/minikafka/consumer/group.py
+    @@ -1,3 +1,11 @@
+    +"""Deterministic consumer-group membership, assignment, and generation fencing.
+    +
+    +This coordinator keeps Kafka's classic generation-ownership invariant but
+    +intentionally collapses JoinGroup/SyncGroup into one eager server-side
+    +rebalance. KIP-62's liveness split and KIP-429 cooperative incremental
+    +rebalancing are not implemented.
+    +"""
+    +
+     from __future__ import annotations
+
+     from collections.abc import Callable, Iterable
+    @@ -160,6 +168,9 @@ class GroupCoordinator:
+
+         @staticmethod
+         def _validate_generation(group: Group, generation: int) -> None:
+    +        # Kafka includes the group generation in heartbeat and offset-commit
+    +        # requests. A membership change increments it, fencing a stale owner
+    +        # before it can commit progress for a partition now assigned elsewhere.
+             if generation != group.generation:
+                 raise IllegalGeneration(generation, group.generation)
+
+    ```
+
+??? note "File diff: src/minikafka/core/cluster.py"
+    ```diff
+    diff --git a/src/minikafka/core/cluster.py b/src/minikafka/core/cluster.py
+    index 9bf1810f9ccdbc7623c519169bcf5f5d45210967..e0fad1664badcd98f0cc1d6cb6833e614b175071 100644
+    --- a/src/minikafka/core/cluster.py
+    +++ b/src/minikafka/core/cluster.py
+    @@ -64,11 +64,11 @@ class BrokerCluster:
+                 config.data_dir / "producer-identities.json"
+             )
+             self._replica_sets: dict[TopicPartition, PartitionReplicaSet] = {}
+    -        self._build_replica_sets()
+             self.transactions = TransactionManager(
+                 self,
+                 TransactionJournal(config.data_dir / "transactions.journal"),
+             )
+    +        self._build_replica_sets()
+             self.state = LifecycleState.RUNNING
+             self.failure_injector = FailureInjector()
+             self._terminal_error: BaseException | None = None
+    @@ -372,6 +372,7 @@ class BrokerCluster:
+                 },
+                 self.clock,
+                 self.config,
+    +            self.transactions,
+             )
+
+         def _build_replica_sets(self) -> None:
+    ```
+
+??? note "File diff: src/minikafka/labs/leader_failure.py"
+    ```diff
+    diff --git a/src/minikafka/labs/leader_failure.py b/src/minikafka/labs/leader_failure.py
+    index 9e45d53dcc5926c7dc6816eed57d0558f2625933..06a50c9a3dccae238936ba762d4d814e294fb2f5 100644
+    --- a/src/minikafka/labs/leader_failure.py
+    +++ b/src/minikafka/labs/leader_failure.py
+    @@ -1,15 +1,54 @@
+    +"""Demonstrate that ``acks=1`` can confirm a leader-only write."""
+    +
+     from __future__ import annotations
+
+    +import asyncio
+    +from pathlib import Path
+    +from tempfile import TemporaryDirectory
+    +
+    +from minikafka import BrokerCluster, MiniKafkaConfig, TopicPartition
+    +
+    +
+    +async def main() -> None:
+    +    """Run the acknowledged-write-loss scenario through the Direct API."""
+    +    with TemporaryDirectory(prefix="minikafka-acks-one-") as directory:
+    +        config = MiniKafkaConfig(
+    +            data_dir=Path(directory),
+    +            broker_ids=(1, 2),
+    +        )
+    +        async with BrokerCluster.open(config) as cluster:
+    +            await cluster.create_topic(
+    +                "payments",
+    +                partitions=1,
+    +                replication_factor=2,
+    +            )
+    +            producer = cluster.producer(batch_size=1, acks=1)
+    +            acknowledged = await producer.send(
+    +                "payments",
+    +                value=b"payment-confirmed",
+    +            )
+    +            partition = TopicPartition("payments", 0)
+    +
+    +            print("1. Producer uses acks=1 (leader acknowledgement only).")
+    +            print(f"   acknowledged offset: {acknowledged.offset}")
+    +            print(
+    +                "   consumer-visible end (HW): "
+    +                f"{cluster.visible_end(partition)}"
+    +            )
+    +            print("   The write is acknowledged but has not reached the follower.")
+    +
+    +            print("2. Simulate the leader failing before follower replication.")
+    +            await cluster.promote(partition, broker_id=2)
+    +            surviving = cluster.fetch(partition, 0, 10)
+    +            print("   broker 2 is promoted; its log did not contain offset 0.")
+    +            print(f"   records after failover: {len(surviving)}")
+    +
+    +            print("3. Result: the acknowledged write was lost.")
+    +            print(
+    +                "   Kafka has the same acks=1 risk; use acks=all with an "
+    +                "appropriate min.insync.replicas for stronger durability."
+    +            )
+    +
+
+    -def acknowledged_write_observation(
+    -    *,
+    -    leader_leo: int,
+    -    follower_leo: int,
+    -    high_watermark: int,
+    -) -> dict[str, int | bool]:
+    -    return {
+    -        "leader_leo": leader_leo,
+    -        "follower_leo": follower_leo,
+    -        "high_watermark": high_watermark,
+    -        "leader_only_tail_at_risk": leader_leo > high_watermark,
+    -    }
+    +if __name__ == "__main__":
+    +    asyncio.run(main())
+    ```
+
+??? note "File diff: src/minikafka/labs/rebalance.py"
+    ```diff
+    diff --git a/src/minikafka/labs/rebalance.py b/src/minikafka/labs/rebalance.py
+    index 43709a0d740d088b3c1690e2466a0a0837f9e825..ae8941daa94b3ba07a67a2af53e795ebff805f72 100644
+    --- a/src/minikafka/labs/rebalance.py
+    +++ b/src/minikafka/labs/rebalance.py
+    @@ -1,12 +1,65 @@
+    +"""Observe assignment changes as members join and leave a consumer group."""
+    +
+     from __future__ import annotations
+
+    +import asyncio
+    +from pathlib import Path
+    +from tempfile import TemporaryDirectory
+    +
+    +from minikafka import BrokerCluster, MiniKafkaConfig, TopicPartition
+    +
+    +
+    +def _format(partitions: tuple[TopicPartition, ...]) -> str:
+    +    return ", ".join(f"{item.topic}-{item.partition}" for item in partitions)
+    +
+    +
+    +async def main() -> None:
+    +    """Run a join/refresh/leave rebalance through the public Consumer API."""
+    +    with TemporaryDirectory(prefix="minikafka-rebalance-") as directory:
+    +        config = MiniKafkaConfig(data_dir=Path(directory))
+    +        async with BrokerCluster.open(config) as cluster:
+    +            await cluster.create_topic(
+    +                "orders",
+    +                partitions=4,
+    +                replication_factor=1,
+    +            )
+    +            first = cluster.consumer(group_id="workers")
+    +            second = cluster.consumer(group_id="workers")
+    +
+    +            print("1. First member joins and initially owns every partition.")
+    +            await first.subscribe(("orders",))
+    +            print(f"   member 1: {_format(first.assignment)}")
+    +
+    +            print("2. Second member joins, triggering a new generation.")
+    +            await second.subscribe(("orders",))
+    +            print(f"   member 2: {_format(second.assignment)}")
+    +            print(
+    +                "   member 1 local view before refresh: "
+    +                f"{_format(first.assignment)}"
+    +            )
+    +            print(
+    +                "   MiniKafka deliberately has no revoke barrier: the old "
+    +                "local assignment remains until refresh_assignment()."
+    +            )
+    +
+    +            await first.refresh_assignment()
+    +            print("3. Member 1 refreshes and observes the stable assignment.")
+    +            print(f"   member 1: {_format(first.assignment)}")
+    +            print(f"   member 2: {_format(second.assignment)}")
+    +            print(
+    +                "   overlap after refresh: "
+    +                f"{bool(set(first.assignment) & set(second.assignment))}"
+    +            )
+    +
+    +            print("4. Member 2 leaves; the remaining member owns all partitions.")
+    +            await second.close()
+    +            await first.refresh_assignment()
+    +            print(f"   member 1: {_format(first.assignment)}")
+    +            print(
+    +                "   Real Kafka coordinates JoinGroup/SyncGroup and revocation; "
+    +                "this mini coordinator completes rebalance synchronously."
+    +            )
+    +
+
+    -def rebalance_observation(
+    -    old_generation: int,
+    -    new_generation: int,
+    -) -> dict[str, int | bool]:
+    -    return {
+    -        "old_generation": old_generation,
+    -        "new_generation": new_generation,
+    -        "old_member_fenced": new_generation > old_generation,
+    -    }
+    +if __name__ == "__main__":
+    +    asyncio.run(main())
+    ```
+
+??? note "File diff: src/minikafka/log/compaction.py"
+    ```diff
+    diff --git a/src/minikafka/log/compaction.py b/src/minikafka/log/compaction.py
+    index fc977c1966055e1b95486824e48f0bf4523de5ce..ecd02b416044a839b2c80b90d7484b677b139561 100644
+    --- a/src/minikafka/log/compaction.py
+    +++ b/src/minikafka/log/compaction.py
+    @@ -1,3 +1,10 @@
+    +"""Key compaction and tombstone retention for closed log segments.
+    +
+    +The policy corresponds to Kafka ``cleanup.policy=compact`` and
+    +``delete.retention.ms``; MiniKafka rebuilds a whole closed-segment view so the
+    +crash-safety boundary is easy to inspect.
+    +"""
+    +
+     from __future__ import annotations
+
+     from collections.abc import Callable, Iterable
+    @@ -49,6 +56,12 @@ class LogCompactor:
+                     if rewritten is not None:
+                         compacted.append(rewritten)
+                         records_after += len(rewritten.records)
+    +        # Kafka's log cleaner rewrites segment files in the background. This
+    +        # project instead fsyncs a sibling directory, renames live -> backup,
+    +        # then replacement -> live, with rollback on an in-process exception.
+    +        # Each rename is atomic but the pair is not: a process crash between
+    +        # them can leave only the backup. The simpler boundary still avoids
+    +        # publishing partially written segment files and preserves offset gaps.
+             log.install_compacted_closed(
+                 tuple(compacted),
+                 before_swap=self.before_swap,
+    ```
+
+??? note "File diff: src/minikafka/log/partition_log.py"
+    ```diff
+    diff --git a/src/minikafka/log/partition_log.py b/src/minikafka/log/partition_log.py
+    index a0bf100f3558690d3e87afea16d8b2c448954579..0a7d6026bc8b55caff513886195f413cbba768ee 100644
+    --- a/src/minikafka/log/partition_log.py
+    +++ b/src/minikafka/log/partition_log.py
+    @@ -259,6 +259,14 @@ class PartitionLog:
+                 )
+             if not requested:
+                 return ()
+    +        expected_prefix = {
+    +            segment.base_offset
+    +            for segment in self.closed_segments[:len(requested)]
+    +        }
+    +        if requested != expected_prefix:
+    +            raise ValueError(
+    +                "retention can delete a continuous prefix of closed segments only"
+    +            )
+             removed = [
+                 segment
+                 for segment in self._segments[:-1]
+    ```
+
+??? note "File diff: src/minikafka/log/retention.py"
+    ```diff
+    diff --git a/src/minikafka/log/retention.py b/src/minikafka/log/retention.py
+    index 0a77d0b2236bfef6e9a8d74807f234d18927789f..44dcf7324e9c8d449c5e9ffa70085dff26e72653 100644
+    --- a/src/minikafka/log/retention.py
+    +++ b/src/minikafka/log/retention.py
+    @@ -21,27 +21,25 @@ class RetentionManager:
+                 raise ValueError("retention_bytes must be positive")
+
+             closed = list(log.closed_segments)
+    -        selected: set[int] = set()
+    +        selected = []
+             if retention_ms is not None:
+                 boundary = self.clock.now_ms() - retention_ms
+    -            selected.update(
+    -                segment.base_offset
+    -                for segment in closed
+    -                if segment.max_timestamp_ms < boundary
+    -            )
+    +            for segment in closed:
+    +                if segment.max_timestamp_ms >= boundary:
+    +                    break
+    +                selected.append(segment)
+
+             if retention_bytes is not None:
+                 total = log.size_bytes - sum(
+                     segment.total_size_bytes
+    -                for segment in closed
+    -                if segment.base_offset in selected
+    +                for segment in selected
+                 )
+    -            for segment in closed:
+    +            for segment in closed[len(selected):]:
+                     if total <= retention_bytes:
+                         break
+    -                if segment.base_offset in selected:
+    -                    continue
+    -                selected.add(segment.base_offset)
+    +                selected.append(segment)
+                     total -= segment.total_size_bytes
+
+    -        return log.delete_closed_segments(tuple(sorted(selected)))
+    +        return log.delete_closed_segments(
+    +            tuple(segment.base_offset for segment in selected)
+    +        )
+    ```
+
+??? note "File diff: src/minikafka/producer/state.py"
+    ```diff
+    diff --git a/src/minikafka/producer/state.py b/src/minikafka/producer/state.py
+    index a26f1c5e0efbc59025fba0e3ec378dd87d152fca..4c567be2216318ec350a47b12a47bbdcb2d68911 100644
+    --- a/src/minikafka/producer/state.py
+    +++ b/src/minikafka/producer/state.py
+    @@ -1,3 +1,9 @@
+    +"""Producer ID/epoch fencing and per-partition sequence deduplication.
+    +
+    +This is the broker-side core of Kafka's idempotent producer from KIP-98, with a
+    +deliberate one-batch history instead of Kafka's five-batch duplicate window.
+    +"""
+    +
+     from __future__ import annotations
+
+     import json
+    @@ -60,6 +66,10 @@ class ProducerStateManager:
+                 and batch.producer_epoch == previous.epoch
+                 and batch.last_sequence <= previous.last_sequence
+             ):
+    +            # KIP-98 retries use PID, epoch, and sequence numbers. Kafka keeps
+    +            # five recent batches (matching max.in.flight.requests.per.connection
+    +            # <= 5); this teaching state stores only the latest exact batch, so
+    +            # older reordered retries become OutOfOrderSequence below.
+                 recorded = previous.result.batch
+                 if (
+                     batch.base_sequence == recorded.base_sequence
+    ```
+
+??? note "File diff: src/minikafka/replication/replica_set.py"
+    ```diff
+    diff --git a/src/minikafka/replication/replica_set.py b/src/minikafka/replication/replica_set.py
+    index 97c678d2d3e18568bfb96916463e64718d0bf8b6..cea681ef3cf254db514b90dfb980832cfc64d55d 100644
+    --- a/src/minikafka/replication/replica_set.py
+    +++ b/src/minikafka/replication/replica_set.py
+    @@ -1,7 +1,15 @@
+    +"""Leader/follower replication, ISR membership, HW, and acknowledgement policy.
+    +
+    +The model exposes Kafka's data-plane decisions deterministically, while manual
+    +promotion and HW-based truncation deliberately avoid implementing a controller
+    +or the full KIP-101 leader-epoch reconciliation protocol.
+    +"""
+    +
+     from __future__ import annotations
+
+     import asyncio
+     from dataclasses import dataclass
+    +from typing import TYPE_CHECKING
+
+     from minikafka.clock import Clock
+     from minikafka.config import MiniKafkaConfig
+    @@ -18,6 +26,9 @@ from minikafka.producer.state import ProducerStateManager
+     from minikafka.replication.model import AckMode, IsolationLevel, ProduceResult
+     from minikafka.replication.replica import Replica
+
+    +if TYPE_CHECKING:
+    +    from minikafka.transaction.manager import TransactionManager
+    +
+
+     @dataclass(slots=True)
+     class AckWaiter:
+    @@ -35,6 +46,7 @@ class PartitionReplicaSet:
+             replicas: dict[int, Replica],
+             clock: Clock,
+             config: MiniKafkaConfig,
+    +        transactions: TransactionManager,
+         ) -> None:
+             self.topic_partition = topic_partition
+             self.leader_id = metadata.leader_id
+    @@ -42,6 +54,7 @@ class PartitionReplicaSet:
+             self.replicas = replicas
+             self.clock = clock
+             self.config = config
+    +        self.transactions = transactions
+             leader_leo = self.leader.leo
+             self._isr = {
+                 broker_id
+    @@ -191,6 +204,12 @@ class PartitionReplicaSet:
+             leader_leo = self.leader.leo
+             next_isr = {self.leader_id}
+             for follower in self.followers:
+    +            # Kafka's current ISR liveness control is
+    +            # replica.lag.time.max.ms. MiniKafka also keeps an explicit offset
+    +            # cap (like the removed replica.lag.max.messages) so a deterministic
+    +            # lab can evict a follower without sleeping. Requiring the follower
+    +            # to cover HW prevents an ISR re-entry from shrinking the committed
+    +            # prefix; all three conditions are intentionally visible here.
+                 within_offset = (
+                     leader_leo - follower.leo
+                     <= self.config.replica_lag_max_offsets
+    @@ -225,6 +244,10 @@ class PartitionReplicaSet:
+             for waiter in self._ack_waiters:
+                 if waiter.future.done():
+                     continue
+    +            # This is the post-append half of Kafka's acks=all plus
+    +            # min.insync.replicas contract. Fail immediately when the ISR can
+    +            # no longer satisfy that durability promise instead of leaving the
+    +            # producer future pending forever.
+                 if len(self._isr) < self.config.min_insync_replicas:
+                     waiter.future.set_exception(
+                         NotEnoughReplicasAfterAppend(
+    @@ -247,9 +270,53 @@ class PartitionReplicaSet:
+             max_records: int,
+             isolation: IsolationLevel = IsolationLevel.READ_UNCOMMITTED,
+         ) -> tuple[LogRecord, ...]:
+    -        del isolation
+    -        return self.leader.log.fetch(
+    +        if isolation is IsolationLevel.READ_UNCOMMITTED:
+    +            return self.leader.log.fetch(
+    +                offset,
+    +                max_records,
+    +                end_offset=self.high_watermark,
+    +            )
+    +        if max_records < 0:
+    +            raise ValueError("max_records cannot be negative")
+    +        end_offset = self.transactions.last_stable_offset(
+    +            self.topic_partition,
+    +            self.high_watermark,
+    +        )
+    +        batches = self.leader.log.read_batches(
+                 offset,
+    -            max_records,
+    -            end_offset=self.high_watermark,
+    +            2**63 - 1,
+    +            end_offset=end_offset,
+             )
+    +        if max_records == 0:
+    +            return ()
+    +        records: list[LogRecord] = []
+    +        for batch in batches:
+    +            if batch.base_offset is None or batch.control is not None:
+    +                continue
+    +            if (
+    +                batch.transactional_id is not None
+    +                and not self.transactions.is_committed(batch.transactional_id)
+    +            ):
+    +                continue
+    +            if batch.offset_deltas is None:
+    +                continue
+    +            for delta, record in zip(
+    +                batch.offset_deltas,
+    +                batch.records,
+    +                strict=True,
+    +            ):
+    +                record_offset = batch.base_offset + delta
+    +                if record_offset < offset or record_offset >= end_offset:
+    +                    continue
+    +                records.append(
+    +                    LogRecord(
+    +                        offset=record_offset,
+    +                        key=record.key,
+    +                        value=record.value,
+    +                        timestamp_ms=record.timestamp_ms,
+    +                        headers=record.headers,
+    +                    )
+    +                )
+    +                if len(records) == max_records:
+    +                    return tuple(records)
+    +        return tuple(records)
+    ```
+
+??? note "File diff: src/minikafka/transaction/manager.py"
+    ```diff
+    diff --git a/src/minikafka/transaction/manager.py b/src/minikafka/transaction/manager.py
+    index c90a1c1c1602a4537a5130b26d1845c009779896..362269b45ae6a58623c9d844e4d9ecf2472eaf54 100644
+    --- a/src/minikafka/transaction/manager.py
+    +++ b/src/minikafka/transaction/manager.py
+    @@ -95,7 +95,7 @@ class TransactionManager:
+                 (Record(key, value, self.cluster.clock.now_ms()),),
+                 transactional_id=data.transaction_id,
+             )
+    -        result = await self.cluster.append_batch(tp, batch, AckMode.LEADER)
+    +        result = await self.cluster.append_batch(tp, batch, AckMode.ALL)
+             data.partitions.add(tp)
+             if result.base_offset is not None:
+                 data.first_offsets.setdefault(tp, result.base_offset)
+    @@ -112,7 +112,7 @@ class TransactionManager:
+                         transaction_id=data.transaction_id,
+                         control=ControlType.COMMIT,
+                     ),
+    -                AckMode.LEADER,
+    +                AckMode.ALL,
+                 )
+             await self.cluster.offsets.commit_many(data.staged_offsets)
+             data.state = TransactionState.COMPLETE_COMMIT
+    @@ -129,7 +129,7 @@ class TransactionManager:
+                         transaction_id=data.transaction_id,
+                         control=ControlType.ABORT,
+                     ),
+    -                AckMode.LEADER,
+    +                AckMode.ALL,
+                 )
+             data.staged_offsets.clear()
+             data.state = TransactionState.COMPLETE_ABORT
+    ```
+
+**What it is and why it appears**
+
+Domain closure means shared invariants survive composition. Transactional writes require `acks=all`; retention deletes only prefixes; `read_committed` uses replica-level transaction knowledge; public exports name the supported semantic surface.
+
+**Runtime role**
+
+The cluster routes transactional appends through replicated acknowledgement, replica reads consult commit markers, retention advances one log-start boundary, and restart restores metadata, offsets, producer, and transaction state.
+
+**Statement understanding**
+
+The final integration checks are not new features: they prove that local invariants use the same authority and durability boundaries when composed.
+
+#### Package and project support
+
+Keep package exports, dependencies, and the test environment reproducible.
+
+??? note "Supporting file diffs (1 file)"
+    **`src/minikafka/__init__.py`**
+
+    ```diff
+    diff --git a/src/minikafka/__init__.py b/src/minikafka/__init__.py
+    index 395317f1fefa08dfea7f098e2accd9392d8b0a25..b50417a1086aef5ecd76346f0fad9efd31971097 100644
+    --- a/src/minikafka/__init__.py
+    +++ b/src/minikafka/__init__.py
+    @@ -1 +1,20 @@
+     """Direct-first MiniKafka reference implementation."""
+    +
+    +from minikafka.config import MiniKafkaConfig
+    +from minikafka.core.cluster import BrokerCluster
+    +from minikafka.core.metadata import TopicPartition
+    +from minikafka.core.record import Header, Record, StoredRecord
+    +from minikafka.producer.producer import RecordMetadata
+    +from minikafka.replication.model import AckMode, IsolationLevel
+    +
+    +__all__ = (
+    +    "AckMode",
+    +    "BrokerCluster",
+    +    "Header",
+    +    "IsolationLevel",
+    +    "MiniKafkaConfig",
+    +    "Record",
+    +    "RecordMetadata",
+    +    "StoredRecord",
+    +    "TopicPartition",
+    +)
+    ```
+
+
+### Verification evidence
+
+Run `uv run pytest -q $(cat journey/stages/20-domain-closure/tests.txt)`, then use Journey Check to compare the cumulative source with the canonical Stage.
+
+### Durable takeaways
+
+The final integration checks are not new features: they prove that local invariants use the same authority and durability boundaries when composed.
+
+### Explain it in your own words
+
+Explain the failure window this Stage closes, how runtime state changes, and which statement protects the boundary.
+
+### Textbook
+
+[Chapter 9](https://github.com/system-in-miniature/mini-kafka/blob/main/docs/tutorial/09-delivery-semantics.md)
+
+[Complete reference patch / 完整参考补丁](https://github.com/system-in-miniature/mini-kafka/blob/main/journey/stages/20-domain-closure/stage.patch)

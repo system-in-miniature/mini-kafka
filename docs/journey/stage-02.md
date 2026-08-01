@@ -1,0 +1,587 @@
+# Stage 02 · Binary-safe record batches
+
+### Goal
+
+Build binary-safe record batches and explain its boundary from executable failure, runtime state, and the critical statement.
+
+??? note "Deliverable files"
+    - `src/minikafka/core/__init__.py`
+    - `src/minikafka/core/batch.py`
+    - `src/minikafka/core/batch_codec.py`
+    - `src/minikafka/core/record.py`
+    - `src/minikafka/errors.py`
+    - `tests/unit/test_batch_codec.py`
+
+### The problem at this point
+
+A broker needs one durable frame that preserves arbitrary bytes and can detect corruption before records enter the log.
+
+### Test contract
+
+#### See the failure first
+
+Round-trip tests include binary keys, values, and headers; corruption and truncation tests prove a decoder must reject plausible-looking partial data.
+
+??? note "File diff: tests/unit/test_batch_codec.py"
+    ```diff
+    diff --git a/tests/unit/test_batch_codec.py b/tests/unit/test_batch_codec.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..bbd23d5e4d25ac6cbcd280238fd369889f3a14dc
+    --- /dev/null
+    +++ b/tests/unit/test_batch_codec.py
+    @@ -0,0 +1,88 @@
+    +from __future__ import annotations
+    +
+    +from dataclasses import replace
+    +
+    +import pytest
+    +
+    +from minikafka.core.batch import ControlType, RecordBatch
+    +from minikafka.core.batch_codec import decode_batch, encode_batch
+    +from minikafka.core.record import Header, Record
+    +from minikafka.errors import CorruptBatch, InvalidRecord
+    +
+    +
+    +def sample_batch() -> RecordBatch:
+    +    return RecordBatch.unassigned(
+    +        records=(
+    +            Record(
+    +                key=b"k\x00",
+    +                value=b"v\xff",
+    +                timestamp_ms=7,
+    +                headers=(Header("trace", b"\x00\x01"),),
+    +            ),
+    +            Record(key=b"k2", value=None, timestamp_ms=8),
+    +        ),
+    +        producer_id=4,
+    +        producer_epoch=2,
+    +        base_sequence=9,
+    +        transactional_id="tx-α",
+    +    ).assign(base_offset=12, leader_epoch=3)
+    +
+    +
+    +def test_batch_round_trip_preserves_binary_records() -> None:
+    +    batch = sample_batch()
+    +
+    +    decoded = decode_batch(encode_batch(batch))
+    +
+    +    assert decoded == batch
+    +    assert decoded.next_offset == 14
+    +    assert decoded.last_sequence == 10
+    +
+    +
+    +def test_crc_detects_payload_corruption() -> None:
+    +    encoded = bytearray(encode_batch(sample_batch()))
+    +    encoded[-1] ^= 0x01
+    +
+    +    with pytest.raises(CorruptBatch, match="CRC"):
+    +        decode_batch(bytes(encoded))
+    +
+    +
+    +def test_decoder_rejects_truncated_frame() -> None:
+    +    encoded = encode_batch(sample_batch())
+    +
+    +    with pytest.raises(CorruptBatch, match="length"):
+    +        decode_batch(encoded[:-1])
+    +
+    +
+    +def test_unassigned_batch_cannot_be_encoded() -> None:
+    +    batch = RecordBatch.unassigned((Record(None, b"x", 1),))
+    +
+    +    with pytest.raises(InvalidRecord, match="assigned"):
+    +        encode_batch(batch)
+    +
+    +
+    +def test_data_batch_must_contain_records() -> None:
+    +    with pytest.raises(InvalidRecord, match="at least one"):
+    +        RecordBatch.unassigned(())
+    +
+    +
+    +def test_control_batch_round_trip_has_no_user_records() -> None:
+    +    batch = RecordBatch.control_marker(
+    +        transaction_id="tx-1",
+    +        control=ControlType.COMMIT,
+    +    ).assign(20, 4)
+    +
+    +    decoded = decode_batch(encode_batch(batch))
+    +
+    +    assert decoded.control is ControlType.COMMIT
+    +    assert decoded.records == ()
+    +    assert decoded.next_offset == 21
+    +
+    +
+    +def test_unknown_format_version_is_rejected() -> None:
+    +    encoded = encode_batch(sample_batch())
+    +    changed = replace(sample_batch(), format_version=99)
+    +
+    +    with pytest.raises(InvalidRecord, match="format version"):
+    +        encode_batch(changed)
+    +
+    +    assert encoded.startswith(b"MKB1")
+    ```
+
+**What this test locks**
+
+These tests lock the Stage's happy path, boundary conditions, visible failures, and recovery invariants.
+
+**How it constructs the counterexample**
+
+Round-trip tests include binary keys, values, and headers; corruption and truncation tests prove a decoder must reject plausible-looking partial data.
+
+**Key test statement**
+
+```python
+assert decoded == batch
+```
+
+This assertion binds the externally visible result to the internal durability or authority boundary, rather than merely checking that a call returned.
+
+**What a failure means**
+
+A failure means the implementation crossed the safety, ordering, visibility, or recovery boundary introduced by this Stage.
+
+### Basic concepts
+
+A Record is user data; a RecordBatch is the append and replication unit; framing states lengths explicitly; CRC authenticates the encoded payload rather than Python objects.
+
+### Why this mechanism is necessary
+
+A broker needs one durable frame that preserves arbitrary bytes and can detect corruption before records enter the log. Without an explicit contract, every later mechanism would depend on accidental behavior.
+
+### Runtime mental model
+
+Encoding assigns a stable binary layout and checksum; decoding validates size, version, control/data invariants, and CRC before constructing domain objects.
+
+### Mechanism blocks
+
+#### Binary-safe record batches mechanism
+
+Encoding assigns a stable binary layout and checksum; decoding validates size, version, control/data invariants, and CRC before constructing domain objects.
+
+??? note "File diff: src/minikafka/core/batch.py"
+    ```diff
+    diff --git a/src/minikafka/core/batch.py b/src/minikafka/core/batch.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..781df292087fc594bac0d22060e67abdb8a3d6dd
+    --- /dev/null
+    +++ b/src/minikafka/core/batch.py
+    @@ -0,0 +1,94 @@
+    +from __future__ import annotations
+    +
+    +from dataclasses import dataclass, replace
+    +from enum import Enum
+    +
+    +from minikafka.core.record import Record
+    +from minikafka.errors import InvalidRecord
+    +
+    +
+    +class ControlType(str, Enum):
+    +    COMMIT = "commit"
+    +    ABORT = "abort"
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class RecordBatch:
+    +    records: tuple[Record, ...]
+    +    base_offset: int | None = None
+    +    leader_epoch: int = -1
+    +    producer_id: int = -1
+    +    producer_epoch: int = -1
+    +    base_sequence: int = -1
+    +    transactional_id: str | None = None
+    +    control: ControlType | None = None
+    +    format_version: int = 1
+    +
+    +    def __post_init__(self) -> None:
+    +        if not self.records and self.control is None:
+    +            raise InvalidRecord("data batch must contain at least one record")
+    +        if self.control is not None and self.records:
+    +            raise InvalidRecord("control batch cannot contain user records")
+    +        if self.control is not None and self.transactional_id is None:
+    +            raise InvalidRecord("control batch requires a transaction ID")
+    +        if self.base_offset is not None and self.base_offset < 0:
+    +            raise InvalidRecord("base offset cannot be negative")
+    +
+    +    @classmethod
+    +    def unassigned(
+    +        cls,
+    +        records: tuple[Record, ...],
+    +        *,
+    +        producer_id: int = -1,
+    +        producer_epoch: int = -1,
+    +        base_sequence: int = -1,
+    +        transactional_id: str | None = None,
+    +    ) -> RecordBatch:
+    +        return cls(
+    +            records=tuple(records),
+    +            producer_id=producer_id,
+    +            producer_epoch=producer_epoch,
+    +            base_sequence=base_sequence,
+    +            transactional_id=transactional_id,
+    +        )
+    +
+    +    @classmethod
+    +    def control_marker(
+    +        cls, *, transaction_id: str, control: ControlType
+    +    ) -> RecordBatch:
+    +        return cls(
+    +            records=(),
+    +            transactional_id=transaction_id,
+    +            control=control,
+    +        )
+    +
+    +    def assign(self, base_offset: int, leader_epoch: int) -> RecordBatch:
+    +        if self.base_offset is not None:
+    +            raise InvalidRecord("batch is already assigned")
+    +        return replace(
+    +            self,
+    +            base_offset=base_offset,
+    +            leader_epoch=leader_epoch,
+    +        )
+    +
+    +    @property
+    +    def logical_count(self) -> int:
+    +        return max(1, len(self.records))
+    +
+    +    @property
+    +    def next_offset(self) -> int:
+    +        if self.base_offset is None:
+    +            raise InvalidRecord("batch must be assigned")
+    +        return self.base_offset + self.logical_count
+    +
+    +    @property
+    +    def last_sequence(self) -> int:
+    +        if self.base_sequence < 0:
+    +            return -1
+    +        return self.base_sequence + self.logical_count - 1
+    +
+    +    @property
+    +    def max_timestamp_ms(self) -> int:
+    +        if not self.records:
+    +            return -1
+    +        return max(record.timestamp_ms for record in self.records)
+    ```
+
+??? note "File diff: src/minikafka/core/batch_codec.py"
+    ```diff
+    diff --git a/src/minikafka/core/batch_codec.py b/src/minikafka/core/batch_codec.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..31f84355ba9c039f48aa1a557c716a91b771f483
+    --- /dev/null
+    +++ b/src/minikafka/core/batch_codec.py
+    @@ -0,0 +1,208 @@
+    +from __future__ import annotations
+    +
+    +import struct
+    +import zlib
+    +from dataclasses import dataclass
+    +
+    +from minikafka.core.batch import ControlType, RecordBatch
+    +from minikafka.core.record import Header, Record
+    +from minikafka.errors import CorruptBatch, InvalidRecord
+    +
+    +MAGIC = b"MKB1"
+    +FORMAT_VERSION = 1
+    +FRAME_HEADER = struct.Struct(">4sII")
+    +PAYLOAD_HEADER = struct.Struct(">BqIqiiBHI")
+    +RECORD_HEADER = struct.Struct(">qiiH")
+    +HEADER_KEY_LENGTH = struct.Struct(">H")
+    +HEADER_VALUE_LENGTH = struct.Struct(">i")
+    +
+    +FLAG_TRANSACTIONAL = 1 << 0
+    +FLAG_COMMIT = 1 << 1
+    +FLAG_ABORT = 1 << 2
+    +
+    +
+    +def _pack_optional_bytes(value: bytes | None) -> tuple[int, bytes]:
+    +    if value is None:
+    +        return -1, b""
+    +    return len(value), value
+    +
+    +
+    +def encode_batch(batch: RecordBatch) -> bytes:
+    +    if batch.base_offset is None:
+    +        raise InvalidRecord("batch must be assigned before encoding")
+    +    if batch.format_version != FORMAT_VERSION:
+    +        raise InvalidRecord(
+    +            f"unsupported format version {batch.format_version}"
+    +        )
+    +
+    +    flags = 0
+    +    if batch.transactional_id is not None:
+    +        flags |= FLAG_TRANSACTIONAL
+    +    if batch.control is ControlType.COMMIT:
+    +        flags |= FLAG_COMMIT
+    +    elif batch.control is ControlType.ABORT:
+    +        flags |= FLAG_ABORT
+    +
+    +    transaction_id = (
+    +        b""
+    +        if batch.transactional_id is None
+    +        else batch.transactional_id.encode("utf-8")
+    +    )
+    +    payload = bytearray(
+    +        PAYLOAD_HEADER.pack(
+    +            batch.format_version,
+    +            batch.base_offset,
+    +            batch.leader_epoch,
+    +            batch.producer_id,
+    +            batch.producer_epoch,
+    +            batch.base_sequence,
+    +            flags,
+    +            len(transaction_id),
+    +            len(batch.records),
+    +        )
+    +    )
+    +    payload.extend(transaction_id)
+    +    for record in batch.records:
+    +        key_length, key = _pack_optional_bytes(record.key)
+    +        value_length, value = _pack_optional_bytes(record.value)
+    +        payload.extend(
+    +            RECORD_HEADER.pack(
+    +                record.timestamp_ms,
+    +                key_length,
+    +                value_length,
+    +                len(record.headers),
+    +            )
+    +        )
+    +        payload.extend(key)
+    +        payload.extend(value)
+    +        for header in record.headers:
+    +            header_key = header.key.encode("utf-8")
+    +            if len(header_key) > 0xFFFF:
+    +                raise InvalidRecord("header key is too large")
+    +            header_value_length, header_value = _pack_optional_bytes(
+    +                header.value
+    +            )
+    +            payload.extend(HEADER_KEY_LENGTH.pack(len(header_key)))
+    +            payload.extend(header_key)
+    +            payload.extend(HEADER_VALUE_LENGTH.pack(header_value_length))
+    +            payload.extend(header_value)
+    +
+    +    checksum = zlib.crc32(payload) & 0xFFFFFFFF
+    +    return FRAME_HEADER.pack(MAGIC, len(payload), checksum) + payload
+    +
+    +
+    +@dataclass(slots=True)
+    +class _Reader:
+    +    data: memoryview
+    +    position: int = 0
+    +
+    +    def read(self, length: int) -> bytes:
+    +        if length < 0 or self.position + length > len(self.data):
+    +            raise CorruptBatch("batch length exceeds available bytes")
+    +        start = self.position
+    +        self.position += length
+    +        return bytes(self.data[start : self.position])
+    +
+    +    def unpack(self, format_: struct.Struct) -> tuple[object, ...]:
+    +        return format_.unpack(self.read(format_.size))
+    +
+    +    @property
+    +    def remaining(self) -> int:
+    +        return len(self.data) - self.position
+    +
+    +
+    +def _read_optional(reader: _Reader, length: int) -> bytes | None:
+    +    if length == -1:
+    +        return None
+    +    if length < -1:
+    +        raise CorruptBatch("negative field length")
+    +    return reader.read(length)
+    +
+    +
+    +def decode_batch(encoded: bytes, *, max_batch_bytes: int = 16_777_216) -> RecordBatch:
+    +    if len(encoded) < FRAME_HEADER.size:
+    +        raise CorruptBatch("batch length is shorter than frame header")
+    +    magic, payload_length, expected_crc = FRAME_HEADER.unpack_from(encoded)
+    +    if magic != MAGIC:
+    +        raise CorruptBatch("invalid batch magic")
+    +    if payload_length > max_batch_bytes:
+    +        raise CorruptBatch("batch length exceeds configured maximum")
+    +    if len(encoded) != FRAME_HEADER.size + payload_length:
+    +        raise CorruptBatch("batch length does not match frame")
+    +    payload = encoded[FRAME_HEADER.size :]
+    +    actual_crc = zlib.crc32(payload) & 0xFFFFFFFF
+    +    if actual_crc != expected_crc:
+    +        raise CorruptBatch("batch CRC mismatch")
+    +
+    +    reader = _Reader(memoryview(payload))
+    +    (
+    +        version,
+    +        base_offset,
+    +        leader_epoch,
+    +        producer_id,
+    +        producer_epoch,
+    +        base_sequence,
+    +        flags,
+    +        transaction_id_length,
+    +        record_count,
+    +    ) = reader.unpack(PAYLOAD_HEADER)
+    +    if version != FORMAT_VERSION:
+    +        raise CorruptBatch(f"unsupported format version {version}")
+    +    transaction_bytes = reader.read(transaction_id_length)
+    +    try:
+    +        transaction_id = (
+    +            transaction_bytes.decode("utf-8")
+    +            if flags & FLAG_TRANSACTIONAL
+    +            else None
+    +        )
+    +    except UnicodeDecodeError as error:
+    +        raise CorruptBatch("invalid transaction ID encoding") from error
+    +    if transaction_id is None and transaction_bytes:
+    +        raise CorruptBatch("transaction ID present without transactional flag")
+    +
+    +    records: list[Record] = []
+    +    for _ in range(record_count):
+    +        timestamp_ms, key_length, value_length, header_count = reader.unpack(
+    +            RECORD_HEADER
+    +        )
+    +        key = _read_optional(reader, key_length)
+    +        value = _read_optional(reader, value_length)
+    +        headers: list[Header] = []
+    +        for _ in range(header_count):
+    +            (header_key_length,) = reader.unpack(HEADER_KEY_LENGTH)
+    +            header_key_bytes = reader.read(header_key_length)
+    +            (header_value_length,) = reader.unpack(HEADER_VALUE_LENGTH)
+    +            header_value = _read_optional(reader, header_value_length)
+    +            try:
+    +                header_key = header_key_bytes.decode("utf-8")
+    +            except UnicodeDecodeError as error:
+    +                raise CorruptBatch("invalid header key encoding") from error
+    +            headers.append(Header(header_key, header_value))
+    +        records.append(Record(key, value, timestamp_ms, tuple(headers)))
+    +    if reader.remaining:
+    +        raise CorruptBatch("batch contains trailing bytes")
+    +
+    +    control_bits = flags & (FLAG_COMMIT | FLAG_ABORT)
+    +    if control_bits == (FLAG_COMMIT | FLAG_ABORT):
+    +        raise CorruptBatch("batch has conflicting control flags")
+    +    control = (
+    +        ControlType.COMMIT
+    +        if control_bits == FLAG_COMMIT
+    +        else ControlType.ABORT
+    +        if control_bits == FLAG_ABORT
+    +        else None
+    +    )
+    +    try:
+    +        return RecordBatch(
+    +            records=tuple(records),
+    +            base_offset=base_offset,
+    +            leader_epoch=leader_epoch,
+    +            producer_id=producer_id,
+    +            producer_epoch=producer_epoch,
+    +            base_sequence=base_sequence,
+    +            transactional_id=transaction_id,
+    +            control=control,
+    +            format_version=version,
+    +        )
+    +    except InvalidRecord as error:
+    +        raise CorruptBatch(str(error)) from error
+    ```
+
+??? note "File diff: src/minikafka/core/record.py"
+    ```diff
+    diff --git a/src/minikafka/core/record.py b/src/minikafka/core/record.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..89c05c89222a0ecc78739226f169b2b6e7783db1
+    --- /dev/null
+    +++ b/src/minikafka/core/record.py
+    @@ -0,0 +1,28 @@
+    +from __future__ import annotations
+    +
+    +from dataclasses import dataclass
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class Header:
+    +    key: str
+    +    value: bytes | None
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class Record:
+    +    key: bytes | None
+    +    value: bytes | None
+    +    timestamp_ms: int
+    +    headers: tuple[Header, ...] = ()
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class StoredRecord:
+    +    topic: str
+    +    partition: int
+    +    offset: int
+    +    key: bytes | None
+    +    value: bytes | None
+    +    timestamp_ms: int
+    +    headers: tuple[Header, ...] = ()
+    ```
+
+??? note "File diff: src/minikafka/errors.py"
+    ```diff
+    diff --git a/src/minikafka/errors.py b/src/minikafka/errors.py
+    index b070c1827c7bb9fbd283e12f21ff8525531d52d2..0f6804c028768cd9afa88d49f1b4d40f8f5985e7 100644
+    --- a/src/minikafka/errors.py
+    +++ b/src/minikafka/errors.py
+    @@ -15,3 +15,11 @@ class OffsetOutOfRange(MiniKafkaError):
+             self.requested = requested
+             self.start = start
+             self.end = end
+    +
+    +
+    +class InvalidRecord(MiniKafkaError):
+    +    code = "INVALID_RECORD"
+    +
+    +
+    +class CorruptBatch(MiniKafkaError):
+    +    code = "CORRUPT_BATCH"
+    ```
+
+**What it is and why it appears**
+
+A Record is user data; a RecordBatch is the append and replication unit; framing states lengths explicitly; CRC authenticates the encoded payload rather than Python objects.
+
+**Runtime role**
+
+Encoding assigns a stable binary layout and checksum; decoding validates size, version, control/data invariants, and CRC before constructing domain objects.
+
+**Statement understanding**
+
+Length checks establish safe read boundaries first; only then may the CRC and semantic fields be trusted.
+
+#### Package and project support
+
+Keep package exports, dependencies, and the test environment reproducible.
+
+??? note "Supporting file diffs (1 file)"
+    **`src/minikafka/core/__init__.py`**
+
+    ```diff
+    diff --git a/src/minikafka/core/__init__.py b/src/minikafka/core/__init__.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..ac8d68a0a89d2529ed0536c7556b90fe5a4e1e4f
+    --- /dev/null
+    +++ b/src/minikafka/core/__init__.py
+    @@ -0,0 +1 @@
+    +"""Core MiniKafka domain values."""
+    ```
+
+
+### Verification evidence
+
+Run `uv run pytest -q $(cat journey/stages/02-record-batches/tests.txt)`, then use Journey Check to compare the cumulative source with the canonical Stage.
+
+### Durable takeaways
+
+Length checks establish safe read boundaries first; only then may the CRC and semantic fields be trusted.
+
+### Explain it in your own words
+
+Explain the failure window this Stage closes, how runtime state changes, and which statement protects the boundary.
+
+### Textbook
+
+[Chapter 2](https://github.com/system-in-miniature/mini-kafka/blob/main/docs/tutorial/02-the-log.md)
+
+[Complete reference patch / 完整参考补丁](https://github.com/system-in-miniature/mini-kafka/blob/main/journey/stages/02-record-batches/stage.patch)

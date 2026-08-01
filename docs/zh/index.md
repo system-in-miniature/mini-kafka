@@ -8,6 +8,14 @@ MiniKafka 是一个直接 API 优先（direct-first）的 Python 参考实现，
 可执行的系统呈现 Kafka 最有辨识度的领域语义：分区追加日志、偏移量、消费组、
 复制、高水位、幂等写入与事务。它用于学习这些机制，不兼容 Kafka 线协议。
 
+## 学习模式
+
+- **机制教程**：按[十章教程](tutorial/index.md)从概念和运行时路径理解各项机制。
+- **自主重建**：进入[二十阶段重建旅程](journey/index.md)，依次阅读当前问题、测试契约、
+  基本概念与按机制分组的代码差异。
+- **Agent 带教**：按照 [CLI 使用教程](agent-guide.md)，让 Codex 互动讲解、实现并
+  验收一个 Stage。
+
 ## 安装
 
 需要 Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)。

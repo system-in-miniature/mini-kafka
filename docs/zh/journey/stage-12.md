@@ -1,0 +1,802 @@
+# Stage 12 · ISR 与 High Watermark
+
+### 目标
+
+实现ISR 与 High Watermark，并能从可执行失败、运行时状态与关键语句解释其边界。
+
+??? note "交付文件"
+    - `src/minikafka/config.py`
+    - `src/minikafka/core/cluster.py`
+    - `src/minikafka/producer/producer.py`
+    - `src/minikafka/replication/__init__.py`
+    - `src/minikafka/replication/model.py`
+    - `src/minikafka/replication/replica.py`
+    - `src/minikafka/replication/replica_set.py`
+    - `tests/replication/test_follower_fetch.py`
+    - `tests/replication/test_high_watermark.py`
+    - `tests/replication/test_isr.py`
+
+### 当前遇到的问题
+
+当 Follower 可能延迟或失败时，Leader 本地 Append 不等于已提交数据。
+
+### 测试契约
+
+#### 先看会坏在哪里
+
+Follower Fetch 测试移动完整 Batch，ISR 测试让落后 Replica 过期，可见性测试拒绝读取 High Watermark 之后的数据。
+
+??? note "文件差异：tests/replication/test_follower_fetch.py"
+    ```diff
+    diff --git a/tests/replication/test_follower_fetch.py b/tests/replication/test_follower_fetch.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..e07dbec69a8f1755e1bb159118149e744775c35d
+    --- /dev/null
+    +++ b/tests/replication/test_follower_fetch.py
+    @@ -0,0 +1,47 @@
+    +from pathlib import Path
+    +
+    +import pytest
+    +
+    +from minikafka.clock import ManualClock
+    +from minikafka.config import MiniKafkaConfig
+    +from minikafka.core.batch import RecordBatch
+    +from minikafka.core.cluster import BrokerCluster
+    +from minikafka.core.metadata import TopicPartition
+    +from minikafka.core.record import Record
+    +from minikafka.replication.model import AckMode
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_follower_pulls_complete_batches_from_its_leo(tmp_path: Path) -> None:
+    +    config = MiniKafkaConfig(data_dir=tmp_path, broker_ids=(1, 2))
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("events", 1, 2)
+    +        tp = TopicPartition("events", 0)
+    +        replica_set = cluster.replica_set(tp)
+    +        batch = RecordBatch.unassigned(
+    +            (Record(None, b"a", 0), Record(None, b"b", 1))
+    +        )
+    +        await replica_set.append(batch, AckMode.LEADER)
+    +
+    +        await replica_set.fetch_followers_once()
+    +
+    +        assert replica_set.replicas[2].leo == 2
+    +        assert [
+    +            record.value
+    +            for record in replica_set.replicas[2].log.fetch(0, 10)
+    +        ] == [b"a", b"b"]
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_cluster_can_pump_all_partition_followers(tmp_path: Path) -> None:
+    +    config = MiniKafkaConfig(data_dir=tmp_path, broker_ids=(1, 2))
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("events", 2, 2)
+    +        producer = cluster.producer(batch_size=1)
+    +        await producer.send("events", value=b"p0", partition=0)
+    +        await producer.send("events", value=b"p1", partition=1)
+    +
+    +        await cluster.replicate_all_once()
+    +
+    +        assert cluster.replica_log(TopicPartition("events", 0), 2).leo == 1
+    +        assert cluster.replica_log(TopicPartition("events", 1), 1).leo == 1
+    ```
+
+**测试锁定什么**
+
+这些测试锁定本 Stage 的正常路径、边界条件、失败可见性与恢复不变量。
+
+**如何构造反例**
+
+Follower Fetch 测试移动完整 Batch，ISR 测试让落后 Replica 过期，可见性测试拒绝读取 High Watermark 之后的数据。
+
+**关键测试语句**
+
+```python
+assert replica_set.replicas[2].leo == 2
+```
+
+这条断言把外部可观察结果与内部持久性或权威边界绑定起来，而不是只检查调用是否返回。
+
+**失败意味着什么**
+
+失败说明实现跨越了本 Stage 刚建立的安全、顺序、可见性或恢复边界。
+
+??? note "文件差异：tests/replication/test_high_watermark.py"
+    ```diff
+    diff --git a/tests/replication/test_high_watermark.py b/tests/replication/test_high_watermark.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..5d85b277f0c3a23c59b4e96eab8870f71b6a7142
+    --- /dev/null
+    +++ b/tests/replication/test_high_watermark.py
+    @@ -0,0 +1,70 @@
+    +from pathlib import Path
+    +
+    +import pytest
+    +
+    +from minikafka.clock import ManualClock
+    +from minikafka.config import MiniKafkaConfig
+    +from minikafka.core.batch import RecordBatch
+    +from minikafka.core.cluster import BrokerCluster
+    +from minikafka.core.metadata import TopicPartition
+    +from minikafka.core.record import Record
+    +from minikafka.replication.model import AckMode, IsolationLevel
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_high_watermark_is_minimum_isr_leo(tmp_path: Path) -> None:
+    +    config = MiniKafkaConfig(data_dir=tmp_path, broker_ids=(1, 2))
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("events", 1, 2)
+    +        replica_set = cluster.replica_set(TopicPartition("events", 0))
+    +
+    +        result = await replica_set.append(
+    +            RecordBatch.unassigned((Record(None, b"x", 0),)),
+    +            AckMode.LEADER,
+    +        )
+    +
+    +        assert result.next_offset == 1
+    +        assert replica_set.leader.leo == 1
+    +        assert replica_set.high_watermark == 0
+    +        await replica_set.fetch_followers_once()
+    +        assert replica_set.high_watermark == 1
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_consumer_cannot_read_above_high_watermark(tmp_path: Path) -> None:
+    +    config = MiniKafkaConfig(data_dir=tmp_path, broker_ids=(1, 2))
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("events", 1, 2)
+    +        tp = TopicPartition("events", 0)
+    +        replica_set = cluster.replica_set(tp)
+    +        await replica_set.append(
+    +            RecordBatch.unassigned((Record(None, b"hidden", 0),)),
+    +            AckMode.LEADER,
+    +        )
+    +
+    +        assert await replica_set.fetch(
+    +            0,
+    +            10,
+    +            IsolationLevel.READ_COMMITTED,
+    +        ) == ()
+    +        consumer = cluster.consumer(group_id="g")
+    +        consumer.assign((tp,))
+    +        assert await consumer.poll(1) == ()
+    +
+    +        await replica_set.fetch_followers_once()
+    +        assert (await consumer.poll(1))[0].value == b"hidden"
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_single_replica_append_immediately_advances_hw(tmp_path: Path) -> None:
+    +    config = MiniKafkaConfig(data_dir=tmp_path)
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("events", 1, 1)
+    +        replica_set = cluster.replica_set(TopicPartition("events", 0))
+    +
+    +        await replica_set.append(
+    +            RecordBatch.unassigned((Record(None, b"visible", 0),)),
+    +            AckMode.LEADER,
+    +        )
+    +
+    +        assert replica_set.high_watermark == 1
+    ```
+
+**测试锁定什么**
+
+这些测试锁定本 Stage 的正常路径、边界条件、失败可见性与恢复不变量。
+
+**如何构造反例**
+
+Follower Fetch 测试移动完整 Batch，ISR 测试让落后 Replica 过期，可见性测试拒绝读取 High Watermark 之后的数据。
+
+**关键测试语句**
+
+```python
+assert replica_set.replicas[2].leo == 2
+```
+
+这条断言把外部可观察结果与内部持久性或权威边界绑定起来，而不是只检查调用是否返回。
+
+**失败意味着什么**
+
+失败说明实现跨越了本 Stage 刚建立的安全、顺序、可见性或恢复边界。
+
+??? note "文件差异：tests/replication/test_isr.py"
+    ```diff
+    diff --git a/tests/replication/test_isr.py b/tests/replication/test_isr.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..f34727cd86ec1bb69ba708c4e3be3838fb8914ca
+    --- /dev/null
+    +++ b/tests/replication/test_isr.py
+    @@ -0,0 +1,51 @@
+    +from pathlib import Path
+    +
+    +import pytest
+    +
+    +from minikafka.clock import ManualClock
+    +from minikafka.config import MiniKafkaConfig
+    +from minikafka.core.batch import RecordBatch
+    +from minikafka.core.cluster import BrokerCluster
+    +from minikafka.core.metadata import TopicPartition
+    +from minikafka.core.record import Record
+    +from minikafka.replication.model import AckMode
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_lagging_follower_leaves_and_rejoins_isr(tmp_path: Path) -> None:
+    +    config = MiniKafkaConfig(
+    +        data_dir=tmp_path,
+    +        broker_ids=(1, 2),
+    +        replica_lag_max_offsets=0,
+    +    )
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("events", 1, 2)
+    +        replica_set = cluster.replica_set(TopicPartition("events", 0))
+    +
+    +        await replica_set.append(
+    +            RecordBatch.unassigned((Record(None, b"x", 0),)),
+    +            AckMode.LEADER,
+    +        )
+    +        replica_set.refresh_isr()
+    +        assert replica_set.isr == frozenset({1})
+    +
+    +        await replica_set.fetch_followers_once()
+    +        assert replica_set.isr == frozenset({1, 2})
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_follower_expires_from_isr_by_fetch_time(tmp_path: Path) -> None:
+    +    clock = ManualClock()
+    +    config = MiniKafkaConfig(
+    +        data_dir=tmp_path,
+    +        broker_ids=(1, 2),
+    +        replica_lag_time_ms=100,
+    +    )
+    +    async with BrokerCluster.open(config, clock=clock) as cluster:
+    +        await cluster.create_topic("events", 1, 2)
+    +        replica_set = cluster.replica_set(TopicPartition("events", 0))
+    +        clock.advance_ms(101)
+    +
+    +        replica_set.refresh_isr()
+    +
+    +        assert replica_set.isr == frozenset({1})
+    ```
+
+**测试锁定什么**
+
+这些测试锁定本 Stage 的正常路径、边界条件、失败可见性与恢复不变量。
+
+**如何构造反例**
+
+Follower Fetch 测试移动完整 Batch，ISR 测试让落后 Replica 过期，可见性测试拒绝读取 High Watermark 之后的数据。
+
+**关键测试语句**
+
+```python
+assert replica_set.replicas[2].leo == 2
+```
+
+这条断言把外部可观察结果与内部持久性或权威边界绑定起来，而不是只检查调用是否返回。
+
+**失败意味着什么**
+
+失败说明实现跨越了本 Stage 刚建立的安全、顺序、可见性或恢复边界。
+
+### 基本概念
+
+LEO 是 Replica 的 Next Offset；ISR 是当前追上的 Replica 集合；High Watermark 是 ISR 中最小 LEO，限制已提交可见性。
+
+### 为什么需要这个机制
+
+当 Follower 可能延迟或失败时，Leader 本地 Append 不等于已提交数据。 如果不建立明确契约，后续机制只能建立在偶然行为上。
+
+### 运行时心智模型
+
+Follower 从自身 LEO Fetch、追加完整 Batch、报告进度，并触发 Membership 与 HW 刷新；Committed Read 停在 HW。
+
+### 机制板块
+
+#### ISR 与 High Watermark机制
+
+Follower 从自身 LEO Fetch、追加完整 Batch、报告进度，并触发 Membership 与 HW 刷新；Committed Read 停在 HW。
+
+??? note "文件差异：src/minikafka/config.py"
+    ```diff
+    diff --git a/src/minikafka/config.py b/src/minikafka/config.py
+    index ba031891c6b9dde98499cc2c86cfb94d445a633e..f3c010da2ae3e5bcdfc7e801abee30c213101f54 100644
+    --- a/src/minikafka/config.py
+    +++ b/src/minikafka/config.py
+    @@ -11,6 +11,10 @@ class MiniKafkaConfig:
+         segment_max_bytes: int = 1_048_576
+         index_interval_bytes: int = 4_096
+         group_session_timeout_ms: int = 10_000
+    +    replica_lag_max_offsets: int = 10_000
+    +    replica_lag_time_ms: int = 10_000
+    +    replica_fetch_max_bytes: int = 1_048_576
+    +    min_insync_replicas: int = 1
+
+         def __post_init__(self) -> None:
+             if self.segment_max_bytes <= 0:
+    @@ -25,3 +29,11 @@ class MiniKafkaConfig:
+                 raise ValueError("broker_ids cannot be negative")
+             if self.group_session_timeout_ms <= 0:
+                 raise ValueError("group_session_timeout_ms must be positive")
+    +        if self.replica_lag_max_offsets < 0:
+    +            raise ValueError("replica_lag_max_offsets cannot be negative")
+    +        if self.replica_lag_time_ms <= 0:
+    +            raise ValueError("replica_lag_time_ms must be positive")
+    +        if self.replica_fetch_max_bytes <= 0:
+    +            raise ValueError("replica_fetch_max_bytes must be positive")
+    +        if self.min_insync_replicas <= 0:
+    +            raise ValueError("min_insync_replicas must be positive")
+    ```
+
+??? note "文件差异：src/minikafka/core/cluster.py"
+    ```diff
+    diff --git a/src/minikafka/core/cluster.py b/src/minikafka/core/cluster.py
+    index 139651901a4e75f74bd62b9a60f61707e69a0376..3a35132724a9016de8ef2bbdf6902b21f5200506 100644
+    --- a/src/minikafka/core/cluster.py
+    +++ b/src/minikafka/core/cluster.py
+    @@ -25,6 +25,9 @@ from minikafka.errors import (
+     from minikafka.log.partition_log import PartitionLog
+     from minikafka.log.segment import LocatedBatch
+     from minikafka.producer.producer import Producer
+    +from minikafka.replication.model import AckMode
+    +from minikafka.replication.replica import Replica
+    +from minikafka.replication.replica_set import PartitionReplicaSet
+
+
+     class BrokerCluster:
+    @@ -52,6 +55,8 @@ class BrokerCluster:
+             self._producers: set[Producer] = set()
+             self._consumers: set[Consumer] = set()
+             self._next_member_id = 1
+    +        self._replica_sets: dict[TopicPartition, PartitionReplicaSet] = {}
+    +        self._build_replica_sets()
+             self._closed = False
+
+         @classmethod
+    @@ -140,6 +145,9 @@ class BrokerCluster:
+                 raise
+             self._logs.update(opened)
+             self._topics[name] = topic
+    +        for partition, metadata in partition_metadata.items():
+    +            tp = TopicPartition(name, partition)
+    +            self._replica_sets[tp] = self._make_replica_set(tp, metadata)
+             return topic
+
+         async def describe_topic(self, name: str) -> TopicMetadata:
+    @@ -182,7 +190,17 @@ class BrokerCluster:
+             batch: RecordBatch,
+         ) -> LocatedBatch:
+             self._ensure_open()
+    -        return self.leader_log(tp).append(batch)
+    +        result = await self.append_batch(tp, batch, AckMode.LEADER)
+    +        return LocatedBatch(result.batch, 0, 0)
+    +
+    +    async def append_batch(
+    +        self,
+    +        tp: TopicPartition,
+    +        batch: RecordBatch,
+    +        acks: AckMode | str | int,
+    +    ):
+    +        self._ensure_open()
+    +        return await self.replica_set(tp).append(batch, acks)
+
+         def producer(
+             self,
+    @@ -190,6 +208,7 @@ class BrokerCluster:
+             batch_size: int = 16_384,
+             linger_ms: int = 0,
+             max_buffer_bytes: int = 1_048_576,
+    +        acks: AckMode | str | int = AckMode.LEADER,
+         ) -> Producer:
+             self._ensure_open()
+             producer = Producer(
+    @@ -198,6 +217,7 @@ class BrokerCluster:
+                 batch_size=batch_size,
+                 linger_ms=linger_ms,
+                 max_buffer_bytes=max_buffer_bytes,
+    +            acks=acks,
+             )
+             self._producers.add(producer)
+             return producer
+    @@ -211,6 +231,11 @@ class BrokerCluster:
+             offset: int,
+             max_records: int,
+         ) -> tuple[StoredRecord, ...]:
+    +        records = self.leader_log(tp).fetch(
+    +            offset,
+    +            max_records,
+    +            end_offset=self.visible_end(tp),
+    +        )
+             return tuple(
+                 StoredRecord(
+                     topic=tp.topic,
+    @@ -221,15 +246,11 @@ class BrokerCluster:
+                     timestamp_ms=record.timestamp_ms,
+                     headers=record.headers,
+                 )
+    -            for record in self.leader_log(tp).fetch(
+    -                offset,
+    -                max_records,
+    -                end_offset=self.visible_end(tp),
+    -            )
+    +            for record in records
+             )
+
+         def visible_end(self, tp: TopicPartition) -> int:
+    -        return self.leader_log(tp).leo
+    +        return self.replica_set(tp).high_watermark
+
+         def log_start_offset(self, tp: TopicPartition) -> int:
+             return self.leader_log(tp).log_start_offset
+    @@ -260,6 +281,41 @@ class BrokerCluster:
+         async def expire_group_members(self) -> tuple[tuple[str, str], ...]:
+             return await self.groups.expire_members()
+
+    +    def replica_set(self, tp: TopicPartition) -> PartitionReplicaSet:
+    +        self.partition_metadata(tp)
+    +        return self._replica_sets[tp]
+    +
+    +    def _make_replica_set(
+    +        self,
+    +        tp: TopicPartition,
+    +        metadata: PartitionMetadata,
+    +    ) -> PartitionReplicaSet:
+    +        now = self.clock.now_ms()
+    +        return PartitionReplicaSet(
+    +            tp,
+    +            metadata,
+    +            {
+    +                broker_id: Replica(
+    +                    broker_id,
+    +                    self._logs[(tp, broker_id)],
+    +                    last_fetch_ms=now,
+    +                )
+    +                for broker_id in metadata.replicas
+    +            },
+    +            self.clock,
+    +            self.config,
+    +        )
+    +
+    +    def _build_replica_sets(self) -> None:
+    +        for topic in self._topics.values():
+    +            for partition, metadata in topic.partitions.items():
+    +                tp = TopicPartition(topic.name, partition)
+    +                self._replica_sets[tp] = self._make_replica_set(tp, metadata)
+    +
+    +    async def replicate_all_once(self) -> None:
+    +        for tp in sorted(self._replica_sets):
+    +            await self._replica_sets[tp].fetch_followers_once()
+    +
+         async def close(self) -> None:
+             if self._closed:
+                 return
+    ```
+
+??? note "文件差异：src/minikafka/producer/producer.py"
+    ```diff
+    diff --git a/src/minikafka/producer/producer.py b/src/minikafka/producer/producer.py
+    index 6009cdff2b9ebc3dbff3b311806c3f6efff9322a..bbc391fd217202f2181125fa0057b844294883e3 100644
+    --- a/src/minikafka/producer/producer.py
+    +++ b/src/minikafka/producer/producer.py
+    @@ -11,6 +11,7 @@ from minikafka.core.record import Header, Record
+     from minikafka.errors import UnknownPartition
+     from minikafka.producer.accumulator import BatchAccumulator, PendingRecord
+     from minikafka.producer.partitioner import Partitioner
+    +from minikafka.replication.model import AckMode
+
+
+     @dataclass(frozen=True, slots=True)
+    @@ -31,10 +32,12 @@ class Producer:
+             batch_size: int,
+             linger_ms: int,
+             max_buffer_bytes: int,
+    +        acks: AckMode | str | int,
+         ) -> None:
+             self.cluster = cluster
+             self.clock = clock
+             self.partitioner = Partitioner()
+    +        self.acks = AckMode.parse(acks)
+             self.accumulator = BatchAccumulator(
+                 batch_size=batch_size,
+                 linger_ms=linger_ms,
+    @@ -94,7 +97,7 @@ class Producer:
+                 tuple(item.record for item in pending),
+             )
+             try:
+    -            appended = await self.cluster.append_leader_batch(tp, batch)
+    +            appended = await self.cluster.append_batch(tp, batch, self.acks)
+             except Exception as error:  # noqa: BLE001 - forward batch failure
+                 for item in pending:
+                     if not item.future.done():
+    ```
+
+??? note "文件差异：src/minikafka/replication/model.py"
+    ```diff
+    diff --git a/src/minikafka/replication/model.py b/src/minikafka/replication/model.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..a070dcffe40a4b810cd7d946935a5d40829a6121
+    --- /dev/null
+    +++ b/src/minikafka/replication/model.py
+    @@ -0,0 +1,45 @@
+    +from __future__ import annotations
+    +
+    +from dataclasses import dataclass
+    +from enum import Enum
+    +
+    +from minikafka.core.batch import RecordBatch
+    +
+    +
+    +class AckMode(str, Enum):
+    +    NONE = "0"
+    +    LEADER = "1"
+    +    ALL = "all"
+    +
+    +    @classmethod
+    +    def parse(cls, value: AckMode | str | int) -> AckMode:
+    +        if isinstance(value, cls):
+    +            return value
+    +        normalized = str(value)
+    +        if normalized == "-1":
+    +            normalized = "all"
+    +        try:
+    +            return cls(normalized)
+    +        except ValueError as error:
+    +            raise ValueError("acks must be 0, 1, or all") from error
+    +
+    +
+    +class IsolationLevel(str, Enum):
+    +    READ_UNCOMMITTED = "read_uncommitted"
+    +    READ_COMMITTED = "read_committed"
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class ProduceResult:
+    +    batch: RecordBatch
+    +    base_offset: int | None
+    +    next_offset: int
+    +    offsets_known: bool = True
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class ReplicaState:
+    +    broker_id: int
+    +    leo: int
+    +    last_fetch_ms: int
+    +    in_sync: bool
+    ```
+
+??? note "文件差异：src/minikafka/replication/replica.py"
+    ```diff
+    diff --git a/src/minikafka/replication/replica.py b/src/minikafka/replication/replica.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..9072ef9a22d27620203de561c3a03d6d1b343245
+    --- /dev/null
+    +++ b/src/minikafka/replication/replica.py
+    @@ -0,0 +1,26 @@
+    +from __future__ import annotations
+    +
+    +from dataclasses import dataclass
+    +
+    +from minikafka.log.partition_log import PartitionLog
+    +from minikafka.replication.model import ReplicaState
+    +
+    +
+    +@dataclass(slots=True)
+    +class Replica:
+    +    broker_id: int
+    +    log: PartitionLog
+    +    last_fetch_ms: int
+    +    in_sync: bool = True
+    +
+    +    @property
+    +    def leo(self) -> int:
+    +        return self.log.leo
+    +
+    +    def state(self) -> ReplicaState:
+    +        return ReplicaState(
+    +            broker_id=self.broker_id,
+    +            leo=self.leo,
+    +            last_fetch_ms=self.last_fetch_ms,
+    +            in_sync=self.in_sync,
+    +        )
+    ```
+
+??? note "文件差异：src/minikafka/replication/replica_set.py"
+    ```diff
+    diff --git a/src/minikafka/replication/replica_set.py b/src/minikafka/replication/replica_set.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..cc705c9fb62f912ccb5bf1e515917f874e91053c
+    --- /dev/null
+    +++ b/src/minikafka/replication/replica_set.py
+    @@ -0,0 +1,137 @@
+    +from __future__ import annotations
+    +
+    +import asyncio
+    +
+    +from minikafka.clock import Clock
+    +from minikafka.config import MiniKafkaConfig
+    +from minikafka.core.batch import RecordBatch
+    +from minikafka.core.metadata import PartitionMetadata, TopicPartition
+    +from minikafka.core.record import LogRecord
+    +from minikafka.replication.model import AckMode, IsolationLevel, ProduceResult
+    +from minikafka.replication.replica import Replica
+    +
+    +
+    +class PartitionReplicaSet:
+    +    def __init__(
+    +        self,
+    +        topic_partition: TopicPartition,
+    +        metadata: PartitionMetadata,
+    +        replicas: dict[int, Replica],
+    +        clock: Clock,
+    +        config: MiniKafkaConfig,
+    +    ) -> None:
+    +        self.topic_partition = topic_partition
+    +        self.leader_id = metadata.leader_id
+    +        self.leader_epoch = metadata.leader_epoch
+    +        self.replicas = replicas
+    +        self.clock = clock
+    +        self.config = config
+    +        leader_leo = self.leader.leo
+    +        self._isr = {
+    +            broker_id
+    +            for broker_id, replica in replicas.items()
+    +            if replica.leo == leader_leo
+    +        }
+    +        self._isr.add(self.leader_id)
+    +        for broker_id, replica in replicas.items():
+    +            replica.in_sync = broker_id in self._isr
+    +        self.high_watermark = min(replica.leo for replica in replicas.values())
+    +        self._lock = asyncio.Lock()
+    +
+    +    @property
+    +    def leader(self) -> Replica:
+    +        return self.replicas[self.leader_id]
+    +
+    +    @property
+    +    def followers(self) -> tuple[Replica, ...]:
+    +        return tuple(
+    +            replica
+    +            for broker_id, replica in sorted(self.replicas.items())
+    +            if broker_id != self.leader_id
+    +        )
+    +
+    +    @property
+    +    def follower_ids(self) -> tuple[int, ...]:
+    +        return tuple(replica.broker_id for replica in self.followers)
+    +
+    +    @property
+    +    def isr(self) -> frozenset[int]:
+    +        return frozenset(self._isr)
+    +
+    +    async def append(
+    +        self,
+    +        batch: RecordBatch,
+    +        acks: AckMode | str | int = AckMode.LEADER,
+    +    ) -> ProduceResult:
+    +        mode = AckMode.parse(acks)
+    +        async with self._lock:
+    +            located = self.leader.log.append(batch)
+    +            self._advance_high_watermark()
+    +            return ProduceResult(
+    +                batch=located.batch,
+    +                base_offset=(
+    +                    located.batch.base_offset
+    +                    if mode is not AckMode.NONE
+    +                    else None
+    +                ),
+    +                next_offset=located.batch.next_offset,
+    +                offsets_known=mode is not AckMode.NONE,
+    +            )
+    +
+    +    async def fetch_followers_once(self) -> None:
+    +        async with self._lock:
+    +            for follower in self.followers:
+    +                batches = self.leader.log.read_batches(
+    +                    follower.leo,
+    +                    self.config.replica_fetch_max_bytes,
+    +                )
+    +                for batch in batches:
+    +                    follower.log.append_replica_batch(batch)
+    +                follower.last_fetch_ms = self.clock.now_ms()
+    +            self.refresh_isr()
+    +
+    +    def refresh_isr(self) -> None:
+    +        now = self.clock.now_ms()
+    +        leader_leo = self.leader.leo
+    +        next_isr = {self.leader_id}
+    +        for follower in self.followers:
+    +            within_offset = (
+    +                leader_leo - follower.leo
+    +                <= self.config.replica_lag_max_offsets
+    +            )
+    +            within_time = (
+    +                now - follower.last_fetch_ms
+    +                <= self.config.replica_lag_time_ms
+    +            )
+    +            if within_offset and within_time:
+    +                next_isr.add(follower.broker_id)
+    +        self._isr = next_isr
+    +        for broker_id, replica in self.replicas.items():
+    +            replica.in_sync = broker_id in next_isr
+    +        self._advance_high_watermark()
+    +
+    +    def remove_from_isr(self, broker_id: int) -> None:
+    +        if broker_id == self.leader_id:
+    +            raise ValueError("leader cannot be removed from ISR")
+    +        self._isr.discard(broker_id)
+    +        self.replicas[broker_id].in_sync = False
+    +        self._advance_high_watermark()
+    +
+    +    def _advance_high_watermark(self) -> None:
+    +        candidate = min(
+    +            self.replicas[broker_id].leo for broker_id in self._isr
+    +        )
+    +        self.high_watermark = max(self.high_watermark, candidate)
+    +
+    +    async def fetch(
+    +        self,
+    +        offset: int,
+    +        max_records: int,
+    +        isolation: IsolationLevel = IsolationLevel.READ_UNCOMMITTED,
+    +    ) -> tuple[LogRecord, ...]:
+    +        del isolation
+    +        return self.leader.log.fetch(
+    +            offset,
+    +            max_records,
+    +            end_offset=self.high_watermark,
+    +        )
+    ```
+
+**是什么，为什么现在需要**
+
+LEO 是 Replica 的 Next Offset；ISR 是当前追上的 Replica 集合；High Watermark 是 ISR 中最小 LEO，限制已提交可见性。
+
+**在运行时做什么**
+
+Follower 从自身 LEO Fetch、追加完整 Batch、报告进度，并触发 Membership 与 HW 刷新；Committed Read 停在 HW。
+
+**关键语句理解**
+
+取 ISR 最小 LEO 证明每个当前同步副本都拥有可见前缀；使用 Leader LEO 会暴露未复制数据。
+
+#### 包与工程支撑
+
+保持包导出、依赖与测试环境可复现。
+
+??? note "支撑文件差异（1 个文件）"
+    **`src/minikafka/replication/__init__.py`**
+
+    ```diff
+    diff --git a/src/minikafka/replication/__init__.py b/src/minikafka/replication/__init__.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..f2095f239d92d03170287ea54ff108f36d2ea41e
+    --- /dev/null
+    +++ b/src/minikafka/replication/__init__.py
+    @@ -0,0 +1 @@
+    +"""Kafka-specific partition replication semantics."""
+    ```
+
+
+### 验证证据
+
+运行 `uv run pytest -q $(cat journey/stages/12-isr-high-watermark/tests.txt)`，再用 Journey Check 比较累计源码与标准 Stage。
+
+### 需要真正记住的内容
+
+取 ISR 最小 LEO 证明每个当前同步副本都拥有可见前缀；使用 Leader LEO 会暴露未复制数据。
+
+### 用自己的话讲清楚
+
+请解释这个 Stage 解决的失败窗口、运行时状态如何变化，以及哪条语句守住边界。
+
+### 教材
+
+[第 5 章](https://github.com/system-in-miniature/mini-kafka/blob/main/docs/zh/tutorial/05-replication-basics.md)
+
+[Complete reference patch / 完整参考补丁](https://github.com/system-in-miniature/mini-kafka/blob/main/journey/stages/12-isr-high-watermark/stage.patch)

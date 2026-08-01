@@ -26,6 +26,16 @@ jobs:
         run: uv sync --dev
       - name: Run tests
         run: uv run pytest -q
+      - name: Check formatting and imports
+        run: uv run ruff check .
+      - name: Verify Journey tooling and Stage chain
+        run: |
+          uv run pytest -q journey/tools/tests
+          uv run python -m journey.tools.render_pages
+          git diff --exit-code -- docs/journey docs/zh/journey
+          uv run python -m journey.tools.build_journey --check
+      - name: Build documentation strictly
+        run: uv run mkdocs build --strict
       - name: Smoke labs
         run: |
           uv run python -m minikafka.labs.leader_failure

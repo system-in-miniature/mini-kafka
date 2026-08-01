@@ -16,6 +16,9 @@ theme:
     - navigation.top
     - content.code.copy
 
+extra_javascript:
+  - assets/javascripts/language-switch.js
+
 nav:
   - Home / 首页: index.md
   - English:
@@ -32,6 +35,30 @@ nav:
           - "08 · Transactions": tutorial/08-transactions.md
           - "09 · Delivery Semantics Lab": tutorial/09-delivery-semantics.md
           - "10 · Protocol and Beyond": tutorial/10-protocol-and-beyond.md
+      - Self-Guided Rebuild:
+          - Build MiniKafka yourself: journey/index.md
+          - "01 · Deterministic foundations": journey/stage-01.md
+          - "02 · Binary-safe record batches": journey/stage-02.md
+          - "03 · Sparse offset lookup": journey/stage-03.md
+          - "04 · Recoverable log segments": journey/stage-04.md
+          - "05 · Segmented partition log": journey/stage-05.md
+          - "06 · Topics and direct administration": journey/stage-06.md
+          - "07 · Partitioned producer batching": journey/stage-07.md
+          - "08 · Consumer position and replay": journey/stage-08.md
+          - "09 · Consumer-group ownership": journey/stage-09.md
+          - "10 · Prefix-only retention": journey/stage-10.md
+          - "11 · Keyed log compaction": journey/stage-11.md
+          - "12 · ISR and high watermark": journey/stage-12.md
+          - "13 · Acknowledgement modes": journey/stage-13.md
+          - "14 · Promotion and epoch fencing": journey/stage-14.md
+          - "15 · Idempotent producer retries": journey/stage-15.md
+          - "16 · Transactional records and offsets": journey/stage-16.md
+          - "17 · Thin JSON TCP adapter": journey/stage-17.md
+          - "18 · Lifecycle and failure labs": journey/stage-18.md
+          - "19 · ISR rejoin regression": journey/stage-19.md
+          - "20 · Cross-mechanism domain closure": journey/stage-20.md
+      - Agent-Guided Rebuild:
+          - CLI usage: agent-guide.md
       - Reference:
           - Architecture: architecture.md
           - "MiniKafka → Kafka Mapping": kafka-mapping.md
@@ -52,6 +79,30 @@ nav:
           - "08 · 事务": zh/tutorial/08-transactions.md
           - "09 · 投递语义实验课": zh/tutorial/09-delivery-semantics.md
           - "10 · 协议层与方法论": zh/tutorial/10-protocol-and-beyond.md
+      - 自主重建:
+          - 从零构建 MiniKafka: zh/journey/index.md
+          - "01 · 确定性基础": zh/journey/stage-01.md
+          - "02 · 二进制安全 Record Batch": zh/journey/stage-02.md
+          - "03 · 稀疏 Offset 查找": zh/journey/stage-03.md
+          - "04 · 可恢复日志段": zh/journey/stage-04.md
+          - "05 · 分段 Partition Log": zh/journey/stage-05.md
+          - "06 · Topic 与直接管理接口": zh/journey/stage-06.md
+          - "07 · 分区化 Producer Batching": zh/journey/stage-07.md
+          - "08 · Consumer Position 与重放": zh/journey/stage-08.md
+          - "09 · Consumer Group 所有权": zh/journey/stage-09.md
+          - "10 · 仅删除前缀的 Retention": zh/journey/stage-10.md
+          - "11 · 按 Key 的日志压实": zh/journey/stage-11.md
+          - "12 · ISR 与 High Watermark": zh/journey/stage-12.md
+          - "13 · 确认模式": zh/journey/stage-13.md
+          - "14 · 晋升与 Epoch Fencing": zh/journey/stage-14.md
+          - "15 · 幂等 Producer 重试": zh/journey/stage-15.md
+          - "16 · 事务化 Record 与 Offset": zh/journey/stage-16.md
+          - "17 · 轻量 JSON TCP Adapter": zh/journey/stage-17.md
+          - "18 · 生命周期与失败实验": zh/journey/stage-18.md
+          - "19 · ISR Rejoin 回归": zh/journey/stage-19.md
+          - "20 · 跨机制领域闭环": zh/journey/stage-20.md
+      - Agent 带教:
+          - CLI 使用教程: zh/agent-guide.md
       - 参考资料:
           - 架构总览: zh/architecture.md
           - "MiniKafka → Kafka 映射": zh/kafka-mapping.md

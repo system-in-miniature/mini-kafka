@@ -1,4 +1,5 @@
 .worktrees/
+.journey-workspaces/
 .venv/
 __pycache__/
 .pytest_cache/

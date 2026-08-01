@@ -34,7 +34,9 @@ def test_final_snapshot_matches_every_owned_reference_byte() -> None:
     assert final == expected
 
 
-def test_generated_patches_apply_cleanly_and_reach_each_snapshot(tmp_path: Path) -> None:
+def test_generated_patches_apply_cleanly_and_reach_each_snapshot(
+    tmp_path: Path,
+) -> None:
     manifest = extract_history.load_manifest(ROOT / "journey" / "manifest.toml")
     workspace = tmp_path / "rebuilt"
     workspace.mkdir()
@@ -50,9 +52,7 @@ def test_generated_patches_apply_cleanly_and_reach_each_snapshot(tmp_path: Path)
             check=True,
         )
         subprocess.run(["git", "apply", str(patch_path)], cwd=workspace, check=True)
-        expected = extract_history.snapshot_for_stage(
-            manifest, stage.number, root=ROOT
-        )
+        expected = extract_history.snapshot_for_stage(manifest, stage.number, root=ROOT)
         actual = {
             path.relative_to(workspace).as_posix(): path.read_bytes()
             for path in workspace.rglob("*")

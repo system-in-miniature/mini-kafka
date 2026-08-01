@@ -1,0 +1,590 @@
+# Stage 15 · 幂等 Producer 重试
+
+### 目标
+
+实现幂等 Producer 重试，并能从可执行失败、运行时状态与关键语句解释其边界。
+
+??? note "交付文件"
+    - `src/minikafka/core/cluster.py`
+    - `src/minikafka/errors.py`
+    - `src/minikafka/producer/producer.py`
+    - `src/minikafka/producer/state.py`
+    - `src/minikafka/replication/replica_set.py`
+    - `tests/producer/test_idempotence.py`
+    - `tests/reliability/test_producer_state_restart.py`
+
+### 当前遇到的问题
+
+响应丢失会迫使重试，但盲目重试会复制可能已经持久化的 Record。
+
+### 测试契约
+
+#### 先看会坏在哪里
+
+测试重发相同 Sequence、制造 Sequence Gap、重启 Producer State，并用同一身份启动第二实例。
+
+??? note "文件差异：tests/producer/test_idempotence.py"
+    ```diff
+    diff --git a/tests/producer/test_idempotence.py b/tests/producer/test_idempotence.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..9769233e796ac8b6db9883ef8139b24a9f2dc5a4
+    --- /dev/null
+    +++ b/tests/producer/test_idempotence.py
+    @@ -0,0 +1,86 @@
+    +import asyncio
+    +from pathlib import Path
+    +
+    +import pytest
+    +
+    +from minikafka.clock import ManualClock
+    +from minikafka.config import MiniKafkaConfig
+    +from minikafka.core.batch import RecordBatch
+    +from minikafka.core.cluster import BrokerCluster
+    +from minikafka.core.metadata import TopicPartition
+    +from minikafka.core.record import Record
+    +from minikafka.errors import OutOfOrderSequence, ProducerFenced
+    +from minikafka.replication.model import AckMode
+    +
+    +
+    +def sequenced(sequence: int, value: bytes, *, epoch: int = 0) -> RecordBatch:
+    +    return RecordBatch.unassigned(
+    +        (Record(None, value, 0),),
+    +        producer_id=7,
+    +        producer_epoch=epoch,
+    +        base_sequence=sequence,
+    +    )
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_exact_retry_returns_original_offsets(tmp_path: Path) -> None:
+    +    config = MiniKafkaConfig(
+    +        data_dir=tmp_path,
+    +        broker_ids=(1, 2),
+    +        min_insync_replicas=2,
+    +    )
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("events", 1, 2)
+    +        replica_set = cluster.replica_set(TopicPartition("events", 0))
+    +        batch = sequenced(0, b"x")
+    +        pending = asyncio.create_task(replica_set.append(batch, AckMode.ALL))
+    +        await asyncio.sleep(0)
+    +        await replica_set.fetch_followers_once()
+    +        first = await pending
+    +
+    +        second = await replica_set.append(batch, AckMode.ALL)
+    +
+    +        assert second == first
+    +        assert replica_set.leader.leo == 1
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_sequence_gap_and_old_epoch_are_rejected(tmp_path: Path) -> None:
+    +    config = MiniKafkaConfig(data_dir=tmp_path, broker_ids=(1,))
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("events", 1, 1)
+    +        replica_set = cluster.replica_set(TopicPartition("events", 0))
+    +        await replica_set.append(sequenced(0, b"first"), AckMode.LEADER)
+    +        with pytest.raises(OutOfOrderSequence):
+    +            await replica_set.append(sequenced(2, b"gap"), AckMode.LEADER)
+    +        await replica_set.append(
+    +            sequenced(0, b"new epoch", epoch=1),
+    +            AckMode.LEADER,
+    +        )
+    +        with pytest.raises(ProducerFenced):
+    +            await replica_set.append(
+    +                sequenced(1, b"old epoch", epoch=0),
+    +                AckMode.LEADER,
+    +            )
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_named_producer_fences_previous_instance(
+    +    tmp_path: Path,
+    +) -> None:
+    +    config = MiniKafkaConfig(data_dir=tmp_path, broker_ids=(1,))
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("events", 1, 1)
+    +        old = cluster.producer(
+    +            transactional_name="writer",
+    +            idempotent=True,
+    +            batch_size=1,
+    +        )
+    +        cluster.producer(
+    +            transactional_name="writer",
+    +            idempotent=True,
+    +            batch_size=1,
+    +        )
+    +
+    +        with pytest.raises(ProducerFenced):
+    +            await old.send("events", value=b"stale")
+    ```
+
+**测试锁定什么**
+
+这些测试锁定本 Stage 的正常路径、边界条件、失败可见性与恢复不变量。
+
+**如何构造反例**
+
+测试重发相同 Sequence、制造 Sequence Gap、重启 Producer State，并用同一身份启动第二实例。
+
+**关键测试语句**
+
+```python
+assert second == first
+```
+
+这条断言把外部可观察结果与内部持久性或权威边界绑定起来，而不是只检查调用是否返回。
+
+**失败意味着什么**
+
+失败说明实现跨越了本 Stage 刚建立的安全、顺序、可见性或恢复边界。
+
+??? note "文件差异：tests/reliability/test_producer_state_restart.py"
+    ```diff
+    diff --git a/tests/reliability/test_producer_state_restart.py b/tests/reliability/test_producer_state_restart.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..b4294702640eb2e6486bed990d541b26b786221e
+    --- /dev/null
+    +++ b/tests/reliability/test_producer_state_restart.py
+    @@ -0,0 +1,40 @@
+    +from pathlib import Path
+    +
+    +import pytest
+    +
+    +from minikafka.clock import ManualClock
+    +from minikafka.config import MiniKafkaConfig
+    +from minikafka.core.batch import RecordBatch
+    +from minikafka.core.cluster import BrokerCluster
+    +from minikafka.core.metadata import TopicPartition
+    +from minikafka.core.record import Record
+    +from minikafka.replication.model import AckMode
+    +
+    +
+    +def sequenced() -> RecordBatch:
+    +    return RecordBatch.unassigned(
+    +        (Record(None, b"once", 0),),
+    +        producer_id=9,
+    +        producer_epoch=0,
+    +        base_sequence=0,
+    +    )
+    +
+    +
+    +@pytest.mark.asyncio
+    +async def test_duplicate_state_rebuilds_from_log(tmp_path: Path) -> None:
+    +    config = MiniKafkaConfig(data_dir=tmp_path, broker_ids=(1,))
+    +    tp = TopicPartition("events", 0)
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
+    +        await cluster.create_topic("events", 1, 1)
+    +        first = await cluster.replica_set(tp).append(
+    +            sequenced(),
+    +            AckMode.LEADER,
+    +        )
+    +
+    +    async with BrokerCluster.open(config, clock=ManualClock()) as reopened:
+    +        duplicate = await reopened.replica_set(tp).append(
+    +            sequenced(),
+    +            AckMode.LEADER,
+    +        )
+    +        assert duplicate.base_offset == first.base_offset
+    +        assert reopened.leader_log(tp).leo == 1
+    ```
+
+**测试锁定什么**
+
+这些测试锁定本 Stage 的正常路径、边界条件、失败可见性与恢复不变量。
+
+**如何构造反例**
+
+测试重发相同 Sequence、制造 Sequence Gap、重启 Producer State，并用同一身份启动第二实例。
+
+**关键测试语句**
+
+```python
+assert second == first
+```
+
+这条断言把外部可观察结果与内部持久性或权威边界绑定起来，而不是只检查调用是否返回。
+
+**失败意味着什么**
+
+失败说明实现跨越了本 Stage 刚建立的安全、顺序、可见性或恢复边界。
+
+### 基本概念
+
+Producer ID 与 Epoch 标识权威；每 Partition Sequence 标识顺序。精确重试返回原 Offset，Gap 与旧 Epoch 被 Fencing。
+
+### 为什么需要这个机制
+
+响应丢失会迫使重试，但盲目重试会复制可能已经持久化的 Record。 如果不建立明确契约，后续机制只能建立在偶然行为上。
+
+### 运行时心智模型
+
+Append 前 State Manager 用持久的分区状态比较 Epoch 与 Sequence；Append 后记录 Batch Result，使重启后仍可复用。
+
+### 机制板块
+
+#### 幂等 Producer 重试机制
+
+Append 前 State Manager 用持久的分区状态比较 Epoch 与 Sequence；Append 后记录 Batch Result，使重启后仍可复用。
+
+??? note "文件差异：src/minikafka/core/cluster.py"
+    ```diff
+    diff --git a/src/minikafka/core/cluster.py b/src/minikafka/core/cluster.py
+    index 3d3ab7d62bdde8f97946da62dfb933e4fbf991a1..8f84bfe5608505d29093390f80badeb9214d5b5f 100644
+    --- a/src/minikafka/core/cluster.py
+    +++ b/src/minikafka/core/cluster.py
+    @@ -26,6 +26,7 @@ from minikafka.errors import (
+     from minikafka.log.partition_log import PartitionLog
+     from minikafka.log.segment import LocatedBatch
+     from minikafka.producer.producer import Producer
+    +from minikafka.producer.state import ProducerIdentityStore
+     from minikafka.replication.model import AckMode
+     from minikafka.replication.replica import Replica
+     from minikafka.replication.replica_set import PartitionReplicaSet
+    @@ -56,6 +57,9 @@ class BrokerCluster:
+             self._producers: set[Producer] = set()
+             self._consumers: set[Consumer] = set()
+             self._next_member_id = 1
+    +        self._producer_identities = ProducerIdentityStore(
+    +            config.data_dir / "producer-identities.json"
+    +        )
+             self._replica_sets: dict[TopicPartition, PartitionReplicaSet] = {}
+             self._build_replica_sets()
+             self._closed = False
+    @@ -210,8 +214,24 @@ class BrokerCluster:
+             linger_ms: int = 0,
+             max_buffer_bytes: int = 1_048_576,
+             acks: AckMode | str | int = AckMode.LEADER,
+    +        idempotent: bool = False,
+    +        transactional_name: str | None = None,
+         ) -> Producer:
+             self._ensure_open()
+    +        if idempotent and AckMode.parse(acks) is not AckMode.ALL:
+    +            if acks == AckMode.LEADER:
+    +                acks = AckMode.ALL
+    +            else:
+    +                raise ValueError("idempotent producer requires acks=all")
+    +        producer_id, producer_epoch = (-1, -1)
+    +        if idempotent:
+    +            name = transactional_name or f"producer-{len(self._producers) + 1}"
+    +            producer_id, producer_epoch = self._producer_identities.allocate(name)
+    +            for replica_set in self._replica_sets.values():
+    +                replica_set.register_producer_epoch(
+    +                    producer_id,
+    +                    producer_epoch,
+    +                )
+             producer = Producer(
+                 self,
+                 self.clock,
+    @@ -219,6 +239,8 @@ class BrokerCluster:
+                 linger_ms=linger_ms,
+                 max_buffer_bytes=max_buffer_bytes,
+                 acks=acks,
+    +            producer_id=producer_id,
+    +            producer_epoch=producer_epoch,
+             )
+             self._producers.add(producer)
+             return producer
+    ```
+
+??? note "文件差异：src/minikafka/errors.py"
+    ```diff
+    diff --git a/src/minikafka/errors.py b/src/minikafka/errors.py
+    index 6699db6fca1e5faddcf887581c44582ce75c72e4..6fdc5a3ebf466c84b38018ae62e8644bf001b70d 100644
+    --- a/src/minikafka/errors.py
+    +++ b/src/minikafka/errors.py
+    @@ -82,3 +82,16 @@ class NotInSyncReplica(MiniKafkaError):
+
+     class FencedLeaderEpoch(MiniKafkaError):
+         code = "FENCED_LEADER_EPOCH"
+    +
+    +
+    +class ProducerFenced(MiniKafkaError):
+    +    code = "PRODUCER_FENCED"
+    +
+    +
+    +class OutOfOrderSequence(MiniKafkaError):
+    +    code = "OUT_OF_ORDER_SEQUENCE"
+    +
+    +    def __init__(self, expected: int, actual: int) -> None:
+    +        super().__init__(f"expected sequence {expected}, got {actual}")
+    +        self.expected = expected
+    +        self.actual = actual
+    ```
+
+??? note "文件差异：src/minikafka/producer/producer.py"
+    ```diff
+    diff --git a/src/minikafka/producer/producer.py b/src/minikafka/producer/producer.py
+    index 90892289c9212dba9e8a756d614ac334386b6606..7c03cc74f81b8bc8f41907b0f723841e85dbd1e6 100644
+    --- a/src/minikafka/producer/producer.py
+    +++ b/src/minikafka/producer/producer.py
+    @@ -33,11 +33,16 @@ class Producer:
+             linger_ms: int,
+             max_buffer_bytes: int,
+             acks: AckMode | str | int,
+    +        producer_id: int = -1,
+    +        producer_epoch: int = -1,
+         ) -> None:
+             self.cluster = cluster
+             self.clock = clock
+             self.partitioner = Partitioner()
+             self.acks = AckMode.parse(acks)
+    +        self.producer_id = producer_id
+    +        self.producer_epoch = producer_epoch
+    +        self._sequences: dict[TopicPartition, int] = {}
+             self.accumulator = BatchAccumulator(
+                 batch_size=batch_size,
+                 linger_ms=linger_ms,
+    @@ -95,6 +100,13 @@ class Producer:
+                 return
+             batch = RecordBatch.unassigned(
+                 tuple(item.record for item in pending),
+    +            producer_id=self.producer_id,
+    +            producer_epoch=self.producer_epoch,
+    +            base_sequence=(
+    +                self._sequences.get(tp, 0)
+    +                if self.producer_id >= 0
+    +                else -1
+    +            ),
+             )
+             try:
+                 appended = await self.cluster.append_batch(tp, batch, self.acks)
+    @@ -103,6 +115,8 @@ class Producer:
+                     if not item.future.done():
+                         item.future.set_exception(error)
+                 return
+    +        if self.producer_id >= 0:
+    +            self._sequences[tp] = batch.last_sequence + 1
+             for delta, item in enumerate(pending):
+                 if not item.future.done():
+                     item.future.set_result(
+    ```
+
+??? note "文件差异：src/minikafka/producer/state.py"
+    ```diff
+    diff --git a/src/minikafka/producer/state.py b/src/minikafka/producer/state.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..a26f1c5e0efbc59025fba0e3ec378dd87d152fca
+    --- /dev/null
+    +++ b/src/minikafka/producer/state.py
+    @@ -0,0 +1,127 @@
+    +from __future__ import annotations
+    +
+    +import json
+    +import os
+    +from dataclasses import dataclass
+    +from pathlib import Path
+    +
+    +from minikafka.core.batch import RecordBatch
+    +from minikafka.errors import OutOfOrderSequence, ProducerFenced
+    +from minikafka.replication.model import ProduceResult
+    +
+    +
+    +@dataclass(frozen=True, slots=True)
+    +class ProducerPartitionState:
+    +    epoch: int
+    +    last_sequence: int
+    +    result: ProduceResult
+    +
+    +
+    +class ProducerStateManager:
+    +    def __init__(self, batches: tuple[RecordBatch, ...]) -> None:
+    +        self._states: dict[int, ProducerPartitionState] = {}
+    +        self._epochs: dict[int, int] = {}
+    +        for batch in batches:
+    +            if batch.producer_id >= 0:
+    +                self.record(batch)
+    +
+    +    def register_epoch(self, producer_id: int, epoch: int) -> None:
+    +        current_epoch = self._epochs.get(producer_id, -1)
+    +        if epoch < current_epoch:
+    +            raise ProducerFenced(f"producer {producer_id} epoch {epoch}")
+    +        self._epochs[producer_id] = epoch
+    +        previous = self._states.get(producer_id)
+    +        if previous is not None and epoch < previous.epoch:
+    +            raise ProducerFenced(f"producer {producer_id} epoch {epoch}")
+    +        if previous is not None and epoch > previous.epoch:
+    +            self._states[producer_id] = ProducerPartitionState(
+    +                epoch,
+    +                -1,
+    +                previous.result,
+    +            )
+    +
+    +    def validate(self, batch: RecordBatch) -> ProduceResult | None:
+    +        if batch.producer_id < 0:
+    +            return None
+    +        current_epoch = self._epochs.get(batch.producer_id, -1)
+    +        if batch.producer_epoch < current_epoch:
+    +            raise ProducerFenced(
+    +                f"producer {batch.producer_id} epoch "
+    +                f"{batch.producer_epoch} is fenced by {current_epoch}"
+    +            )
+    +        previous = self._states.get(batch.producer_id)
+    +        if previous is not None and batch.producer_epoch < previous.epoch:
+    +            raise ProducerFenced(
+    +                f"producer {batch.producer_id} epoch "
+    +                f"{batch.producer_epoch} is fenced by {previous.epoch}"
+    +            )
+    +        if (
+    +            previous is not None
+    +            and batch.producer_epoch == previous.epoch
+    +            and batch.last_sequence <= previous.last_sequence
+    +        ):
+    +            recorded = previous.result.batch
+    +            if (
+    +                batch.base_sequence == recorded.base_sequence
+    +                and batch.last_sequence == recorded.last_sequence
+    +            ):
+    +                return previous.result
+    +        expected = (
+    +            0
+    +            if previous is None or batch.producer_epoch > previous.epoch
+    +            else previous.last_sequence + 1
+    +        )
+    +        if batch.base_sequence != expected:
+    +            raise OutOfOrderSequence(expected, batch.base_sequence)
+    +        return None
+    +
+    +    def record(self, batch: RecordBatch) -> ProduceResult:
+    +        result = ProduceResult(
+    +            batch=batch,
+    +            base_offset=batch.base_offset,
+    +            next_offset=batch.next_offset,
+    +        )
+    +        self._states[batch.producer_id] = ProducerPartitionState(
+    +            batch.producer_epoch,
+    +            batch.last_sequence,
+    +            result,
+    +        )
+    +        self._epochs[batch.producer_id] = max(
+    +            self._epochs.get(batch.producer_id, -1),
+    +            batch.producer_epoch,
+    +        )
+    +        return result
+    +
+    +
+    +class ProducerIdentityStore:
+    +    def __init__(self, path: Path) -> None:
+    +        self.path = path
+    +        self._identities = self._load()
+    +
+    +    def allocate(self, name: str) -> tuple[int, int]:
+    +        current = self._identities.get(name)
+    +        if current is None:
+    +            producer_id, epoch = len(self._identities) + 1, 0
+    +        else:
+    +            producer_id, epoch = current[0], current[1] + 1
+    +        self._identities[name] = (producer_id, epoch)
+    +        self._save()
+    +        return producer_id, epoch
+    +
+    +    def _load(self) -> dict[str, tuple[int, int]]:
+    +        if not self.path.exists():
+    +            return {}
+    +        raw = json.loads(self.path.read_text())
+    +        return {
+    +            name: (int(value[0]), int(value[1]))
+    +            for name, value in raw.items()
+    +        }
+    +
+    +    def _save(self) -> None:
+    +        self.path.parent.mkdir(parents=True, exist_ok=True)
+    +        temporary = self.path.with_suffix(".tmp")
+    +        with temporary.open("w") as file:
+    +            json.dump(self._identities, file, sort_keys=True)
+    +            file.flush()
+    +            os.fsync(file.fileno())
+    +        os.replace(temporary, self.path)
+    ```
+
+??? note "文件差异：src/minikafka/replication/replica_set.py"
+    ```diff
+    diff --git a/src/minikafka/replication/replica_set.py b/src/minikafka/replication/replica_set.py
+    index 4d79ee04046084cfb91f878e4ae11eb6470f0b9c..51e1a0002e30d9a7f220918f61ce0477590eaebc 100644
+    --- a/src/minikafka/replication/replica_set.py
+    +++ b/src/minikafka/replication/replica_set.py
+    @@ -14,6 +14,7 @@ from minikafka.errors import (
+         NotEnoughReplicasAfterAppend,
+         NotInSyncReplica,
+     )
+    +from minikafka.producer.state import ProducerStateManager
+     from minikafka.replication.model import AckMode, IsolationLevel, ProduceResult
+     from minikafka.replication.replica import Replica
+
+    @@ -53,6 +54,7 @@ class PartitionReplicaSet:
+             self.high_watermark = min(replica.leo for replica in replicas.values())
+             self._lock = asyncio.Lock()
+             self._ack_waiters: list[AckWaiter] = []
+    +        self.producer_state = ProducerStateManager(self.leader.log.all_batches())
+
+         @property
+         def leader(self) -> Replica:
+    @@ -89,6 +91,9 @@ class PartitionReplicaSet:
+                         f"leader epoch {leader_epoch} does not match "
+                         f"{self.leader_epoch}"
+                     )
+    +            duplicate = self.producer_state.validate(batch)
+    +            if duplicate is not None:
+    +                return duplicate
+                 if (
+                     mode is AckMode.ALL
+                     and len(self._isr) < self.config.min_insync_replicas
+    @@ -98,6 +103,7 @@ class PartitionReplicaSet:
+                         f"{self.config.min_insync_replicas}"
+                     )
+                 located = self.leader.log.append(batch)
+    +            self.producer_state.record(located.batch)
+                 self._advance_high_watermark()
+                 result = ProduceResult(
+                     batch=located.batch,
+    @@ -161,6 +167,9 @@ class PartitionReplicaSet:
+                             FencedLeaderEpoch("leader changed before acknowledgement")
+                         )
+                 self._ack_waiters.clear()
+    +            self.producer_state = ProducerStateManager(
+    +                self.leader.log.all_batches()
+    +            )
+
+         async def rejoin(self, broker_id: int) -> None:
+             async with self._lock:
+    @@ -174,6 +183,9 @@ class PartitionReplicaSet:
+                 replica.in_sync = False
+                 self._isr.discard(broker_id)
+
+    +    def register_producer_epoch(self, producer_id: int, epoch: int) -> None:
+    +        self.producer_state.register_epoch(producer_id, epoch)
+    +
+         def refresh_isr(self) -> None:
+             now = self.clock.now_ms()
+             leader_leo = self.leader.leo
+    ```
+
+**是什么，为什么现在需要**
+
+Producer ID 与 Epoch 标识权威；每 Partition Sequence 标识顺序。精确重试返回原 Offset，Gap 与旧 Epoch 被 Fencing。
+
+**在运行时做什么**
+
+Append 前 State Manager 用持久的分区状态比较 Epoch 与 Sequence；Append 后记录 Batch Result，使重启后仍可复用。
+
+**关键语句理解**
+
+只有 Next Sequence 可以追加，而刚完成的重复 Sequence 可以复用保存结果；这是两个分支，不是一个宽松不等式。
+
+### 验证证据
+
+运行 `uv run pytest -q $(cat journey/stages/15-idempotent-producer/tests.txt)`，再用 Journey Check 比较累计源码与标准 Stage。
+
+### 需要真正记住的内容
+
+只有 Next Sequence 可以追加，而刚完成的重复 Sequence 可以复用保存结果；这是两个分支，不是一个宽松不等式。
+
+### 用自己的话讲清楚
+
+请解释这个 Stage 解决的失败窗口、运行时状态如何变化，以及哪条语句守住边界。
+
+### 教材
+
+[第 4 章](https://github.com/system-in-miniature/mini-kafka/blob/main/docs/zh/tutorial/04-producer.md)
+
+[Complete reference patch / 完整参考补丁](https://github.com/system-in-miniature/mini-kafka/blob/main/journey/stages/15-idempotent-producer/stage.patch)

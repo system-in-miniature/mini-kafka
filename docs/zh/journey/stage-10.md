@@ -1,0 +1,321 @@
+# Stage 10 · 仅删除前缀的 Retention
+
+### 目标
+
+实现仅删除前缀的 Retention，并能从可执行失败、运行时状态与关键语句解释其边界。
+
+??? note "交付文件"
+    - `src/minikafka/log/partition_log.py`
+    - `src/minikafka/log/retention.py`
+    - `src/minikafka/log/segment.py`
+    - `tests/log/test_retention.py`
+
+### 当前遇到的问题
+
+磁盘限制要求删除数据，但任意删除字节或 Active Segment 会破坏 Offset 连续性与恢复。
+
+### 测试契约
+
+#### 先看会坏在哪里
+
+时间与大小测试创建多个 Segment，并证明删除只作用于符合条件的 Closed Prefix，Active Tail 始终保留。
+
+??? note "文件差异：tests/log/test_retention.py"
+    ```diff
+    diff --git a/tests/log/test_retention.py b/tests/log/test_retention.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..d74962771fbc55472d2483f057566972891cbf3a
+    --- /dev/null
+    +++ b/tests/log/test_retention.py
+    @@ -0,0 +1,84 @@
+    +from pathlib import Path
+    +
+    +import pytest
+    +
+    +from minikafka.clock import ManualClock
+    +from minikafka.config import MiniKafkaConfig
+    +from minikafka.core.batch import RecordBatch
+    +from minikafka.core.record import Record
+    +from minikafka.errors import OffsetOutOfRange
+    +from minikafka.log.partition_log import PartitionLog
+    +from minikafka.log.retention import RetentionManager
+    +
+    +
+    +def append(log: PartitionLog, value: bytes, timestamp_ms: int) -> None:
+    +    log.append(
+    +        RecordBatch.unassigned(
+    +            (Record(key=None, value=value, timestamp_ms=timestamp_ms),)
+    +        )
+    +    )
+    +
+    +
+    +def rolled_log(tmp_path: Path) -> PartitionLog:
+    +    config = MiniKafkaConfig(
+    +        data_dir=tmp_path,
+    +        segment_max_bytes=80,
+    +        index_interval_bytes=1,
+    +    )
+    +    log = PartitionLog.open(tmp_path / "events-0", config)
+    +    for timestamp in (0, 50, 150, 250):
+    +        append(log, bytes([timestamp % 256]) * 20, timestamp)
+    +    assert len(log.closed_segments) >= 3
+    +    return log
+    +
+    +
+    +def test_time_retention_deletes_closed_segments_only(tmp_path: Path) -> None:
+    +    log = rolled_log(tmp_path)
+    +    active_base = log.active.base_offset
+    +    manager = RetentionManager(ManualClock(300))
+    +
+    +    deleted = manager.apply(log, retention_ms=100, retention_bytes=None)
+    +
+    +    assert deleted == (0, 1, 2)
+    +    assert log.active.base_offset == active_base
+    +    assert log.log_start_offset == active_base
+    +    with pytest.raises(OffsetOutOfRange):
+    +        log.fetch(0, 1)
+    +    log.close()
+    +
+    +
+    +def test_size_retention_deletes_oldest_segments_first(tmp_path: Path) -> None:
+    +    log = rolled_log(tmp_path)
+    +    newest_closed = log.closed_segments[-1].base_offset
+    +    target = log.active.size_bytes + log.closed_segments[-1].size_bytes + 20
+    +
+    +    deleted = RetentionManager(ManualClock()).apply(
+    +        log,
+    +        retention_ms=None,
+    +        retention_bytes=target,
+    +    )
+    +
+    +    assert deleted
+    +    assert deleted == tuple(sorted(deleted))
+    +    assert newest_closed not in deleted
+    +    assert log.log_start_offset > 0
+    +    log.close()
+    +
+    +
+    +def test_retention_result_survives_restart(tmp_path: Path) -> None:
+    +    log = rolled_log(tmp_path)
+    +    directory = log.directory
+    +    config = log.config
+    +    RetentionManager(ManualClock(300)).apply(
+    +        log,
+    +        retention_ms=100,
+    +        retention_bytes=None,
+    +    )
+    +    start = log.log_start_offset
+    +    log.close()
+    +
+    +    reopened = PartitionLog.open(directory, config)
+    +
+    +    assert reopened.log_start_offset == start
+    +    assert [record.offset for record in reopened.fetch(start, 10)] == [start]
+    +    reopened.close()
+    ```
+
+**测试锁定什么**
+
+这些测试锁定本 Stage 的正常路径、边界条件、失败可见性与恢复不变量。
+
+**如何构造反例**
+
+时间与大小测试创建多个 Segment，并证明删除只作用于符合条件的 Closed Prefix，Active Tail 始终保留。
+
+**关键测试语句**
+
+```python
+assert len(log.closed_segments) >= 3
+```
+
+这条断言把外部可观察结果与内部持久性或权威边界绑定起来，而不是只检查调用是否返回。
+
+**失败意味着什么**
+
+失败说明实现跨越了本 Stage 刚建立的安全、顺序、可见性或恢复边界。
+
+### 基本概念
+
+Retention 是对旧 Closed Segment 的物理删除。Log Start Offset 前进，但已有 Record Offset 永不重编号。Active Segment 不是删除候选。
+
+### 为什么需要这个机制
+
+磁盘限制要求删除数据，但任意删除字节或 Active Segment 会破坏 Offset 连续性与恢复。 如果不建立明确契约，后续机制只能建立在偶然行为上。
+
+### 运行时心智模型
+
+Manager 从旧到新评估 Age 或总字节，在第一个不符合边界处停止，删除选中的文件并刷新 Partition 视图。
+
+### 机制板块
+
+#### 仅删除前缀的 Retention机制
+
+Manager 从旧到新评估 Age 或总字节，在第一个不符合边界处停止，删除选中的文件并刷新 Partition 视图。
+
+??? note "文件差异：src/minikafka/log/partition_log.py"
+    ```diff
+    diff --git a/src/minikafka/log/partition_log.py b/src/minikafka/log/partition_log.py
+    index e6d7a33c0adeb05f364797901415e2180653fa26..f55c17f40aedcd11ca2f0b3faf00a4424cb2ebe6 100644
+    --- a/src/minikafka/log/partition_log.py
+    +++ b/src/minikafka/log/partition_log.py
+    @@ -99,10 +99,7 @@ class PartitionLog:
+
+         @property
+         def size_bytes(self) -> int:
+    -        return sum(
+    -            segment.size_bytes + segment.index_path.stat().st_size
+    -            for segment in self._segments
+    -        )
+    +        return sum(segment.total_size_bytes for segment in self._segments)
+
+         def append(self, batch: RecordBatch) -> LocatedBatch:
+             assigned = batch.assign(self.leo, self.leader_epoch)
+    @@ -235,6 +232,36 @@ class PartitionLog:
+             for path in paths:
+                 path.unlink(missing_ok=True)
+
+    +    def delete_closed_segments(
+    +        self,
+    +        base_offsets: list[int] | tuple[int, ...],
+    +    ) -> tuple[int, ...]:
+    +        requested = set(base_offsets)
+    +        closed = {segment.base_offset for segment in self.closed_segments}
+    +        unknown = requested.difference(closed)
+    +        if unknown:
+    +            raise ValueError(
+    +                f"retention can delete closed segments only: {sorted(unknown)}"
+    +            )
+    +        if not requested:
+    +            return ()
+    +        removed = [
+    +            segment
+    +            for segment in self._segments[:-1]
+    +            if segment.base_offset in requested
+    +        ]
+    +        self._segments = [
+    +            segment
+    +            for segment in self._segments
+    +            if segment.base_offset not in requested
+    +        ]
+    +        for segment in removed:
+    +            paths = (segment.log_path, segment.index_path)
+    +            segment.close()
+    +            for path in paths:
+    +                path.unlink(missing_ok=True)
+    +        return tuple(sorted(requested))
+    +
+         def flush(self) -> None:
+             for segment in self._segments:
+                 segment.flush()
+    ```
+
+??? note "文件差异：src/minikafka/log/retention.py"
+    ```diff
+    diff --git a/src/minikafka/log/retention.py b/src/minikafka/log/retention.py
+    new file mode 100644
+    index 0000000000000000000000000000000000000000..0a77d0b2236bfef6e9a8d74807f234d18927789f
+    --- /dev/null
+    +++ b/src/minikafka/log/retention.py
+    @@ -0,0 +1,47 @@
+    +from __future__ import annotations
+    +
+    +from minikafka.clock import Clock
+    +from minikafka.log.partition_log import PartitionLog
+    +
+    +
+    +class RetentionManager:
+    +    def __init__(self, clock: Clock) -> None:
+    +        self.clock = clock
+    +
+    +    def apply(
+    +        self,
+    +        log: PartitionLog,
+    +        *,
+    +        retention_ms: int | None,
+    +        retention_bytes: int | None,
+    +    ) -> tuple[int, ...]:
+    +        if retention_ms is not None and retention_ms < 0:
+    +            raise ValueError("retention_ms cannot be negative")
+    +        if retention_bytes is not None and retention_bytes <= 0:
+    +            raise ValueError("retention_bytes must be positive")
+    +
+    +        closed = list(log.closed_segments)
+    +        selected: set[int] = set()
+    +        if retention_ms is not None:
+    +            boundary = self.clock.now_ms() - retention_ms
+    +            selected.update(
+    +                segment.base_offset
+    +                for segment in closed
+    +                if segment.max_timestamp_ms < boundary
+    +            )
+    +
+    +        if retention_bytes is not None:
+    +            total = log.size_bytes - sum(
+    +                segment.total_size_bytes
+    +                for segment in closed
+    +                if segment.base_offset in selected
+    +            )
+    +            for segment in closed:
+    +                if total <= retention_bytes:
+    +                    break
+    +                if segment.base_offset in selected:
+    +                    continue
+    +                selected.add(segment.base_offset)
+    +                total -= segment.total_size_bytes
+    +
+    +        return log.delete_closed_segments(tuple(sorted(selected)))
+    ```
+
+??? note "文件差异：src/minikafka/log/segment.py"
+    ```diff
+    diff --git a/src/minikafka/log/segment.py b/src/minikafka/log/segment.py
+    index e70b3546183be34cd87ade43f2e53cd5eb13ed4a..f05b248140dbd61b611ace58eab09792aa4fcd0f 100644
+    --- a/src/minikafka/log/segment.py
+    +++ b/src/minikafka/log/segment.py
+    @@ -178,6 +178,15 @@ class Segment:
+         def has_data(self) -> bool:
+             return self.leo > self.base_offset
+
+    +    @property
+    +    def total_size_bytes(self) -> int:
+    +        index_size = (
+    +            self.index_path.stat().st_size
+    +            if self.index_path.exists()
+    +            else 0
+    +        )
+    +        return self.size_bytes + index_size
+    +
+         def append(self, batch: RecordBatch) -> BatchLocation:
+             if batch.base_offset != self.leo:
+                 raise InvalidRecord(
+    ```
+
+**是什么，为什么现在需要**
+
+Retention 是对旧 Closed Segment 的物理删除。Log Start Offset 前进，但已有 Record Offset 永不重编号。Active Segment 不是删除候选。
+
+**在运行时做什么**
+
+Manager 从旧到新评估 Age 或总字节，在第一个不符合边界处停止，删除选中的文件并刷新 Partition 视图。
+
+**关键语句理解**
+
+删除前缀能保持唯一单调的 Log Start Boundary；删除中间 Segment 会制造无法解释的物理空洞。
+
+### 验证证据
+
+运行 `uv run pytest -q $(cat journey/stages/10-retention/tests.txt)`，再用 Journey Check 比较累计源码与标准 Stage。
+
+### 需要真正记住的内容
+
+删除前缀能保持唯一单调的 Log Start Boundary；删除中间 Segment 会制造无法解释的物理空洞。
+
+### 用自己的话讲清楚
+
+请解释这个 Stage 解决的失败窗口、运行时状态如何变化，以及哪条语句守住边界。
+
+### 教材
+
+[第 3 章](https://github.com/system-in-miniature/mini-kafka/blob/main/docs/zh/tutorial/03-retention-compaction.md)
+
+[Complete reference patch / 完整参考补丁](https://github.com/system-in-miniature/mini-kafka/blob/main/journey/stages/10-retention/stage.patch)

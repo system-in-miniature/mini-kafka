@@ -22,6 +22,16 @@ The project concentrates on the mechanisms that make Kafka Kafka:
 TCP is deliberately a thin adapter. Automatic elections, KRaft and generic
 failure detection are deliberately outside the data-plane core.
 
+## Learning modes
+
+- **Mechanism Tutorial** — study the concepts and runtime paths through the
+  [bilingual ten-chapter tutorial](docs/tutorial/index.md).
+- **Self-Guided Rebuild** — rebuild MiniKafka through twenty independently
+  browsable Stages with failure evidence and grouped diffs in the
+  [Journey](docs/journey/index.md).
+- **Agent-Guided Rebuild** — ask Codex to guide, implement, explain, and verify
+  one Stage interactively; see the short [CLI usage guide](docs/agent-guide.md).
+
 ## Direct API
 
 ```python
@@ -140,10 +150,10 @@ and [broker configuration](https://kafka.apache.org/43/configuration/broker-conf
 
 ## Repository boundary
 
-Course material is separate from this implementation repository. This
-repository is the completed, executable reference artifact; a later course
-repository may teach it incrementally without coupling lessons to runtime
-code or embedding chapter content here.
+The reference implementation, mechanism tutorial, and reconstruction Journey
+live together so every learning claim can point to executable evidence. The
+Journey owns teaching artifacts only; the final Stage must remain byte-for-byte
+identical to the reference source and behavioral tests.
 
 ## Trademark Notice
 

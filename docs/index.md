@@ -14,6 +14,27 @@ MiniKafka 是一个紧凑、可运行的 Python 教学模型，用于理解 Kafk
 - [English tutorial contents](tutorial/index.md)
 - [中文教程目录](zh/tutorial/index.md)
 
+## Learning modes / 学习模式
+
+### Mechanism Tutorial / 机制教程
+
+Use the existing ten chapters for a concept-first explanation of storage,
+producer, replication, consumer-group, transaction, and protocol mechanisms. /
+希望先建立概念与运行时心智模型时，按现有十章学习存储、生产、复制、消费组、事务与协议。
+
+### Self-Guided Rebuild / 自主重建
+
+Use the [twenty-stage Journey](journey/index.md) to understand the current
+problem, test contract, concepts, and grouped code diffs in a browser. / 使用
+[二十阶段重建旅程](zh/journey/index.md)，在浏览器中依次理解当前问题、测试契约、
+基本概念与按机制分组的代码差异。
+
+### Agent-Guided Rebuild / Agent 带教
+
+Use the [CLI guide](agent-guide.md) when you want Codex to interactively teach,
+implement, and verify one Stage. / 希望由 Codex 互动讲解、实现并验收一个 Stage 时，
+参照 [CLI 使用教程](zh/agent-guide.md)。
+
 ## Documentation map / 文档地图
 
 | Destination / 页面 | Purpose / 用途 |

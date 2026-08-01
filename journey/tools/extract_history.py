@@ -149,9 +149,7 @@ def _write_snapshot(directory: Path, snapshot: dict[str, bytes]) -> None:
         path.write_bytes(payload)
 
 
-def patch_for_stage(
-    manifest: HistoryManifest, number: int, *, root: Path
-) -> bytes:
+def patch_for_stage(manifest: HistoryManifest, number: int, *, root: Path) -> bytes:
     previous = snapshot_for_stage(manifest, number - 1, root=root)
     current = snapshot_for_stage(manifest, number, root=root)
     with tempfile.TemporaryDirectory(prefix=f"minikafka-patch-{number:02d}-") as raw:
@@ -160,7 +158,18 @@ def patch_for_stage(
         _write_snapshot(repository, previous)
         subprocess.run(["git", "add", "-A"], cwd=repository, check=True)
         subprocess.run(
-            ["git", "-c", "user.name=MiniKafka Journey", "-c", "user.email=journey@example.invalid", "commit", "-q", "--allow-empty", "-m", f"stage-{number - 1:02d}"],
+            [
+                "git",
+                "-c",
+                "user.name=MiniKafka Journey",
+                "-c",
+                "user.email=journey@example.invalid",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                f"stage-{number - 1:02d}",
+            ],
             cwd=repository,
             check=True,
         )
