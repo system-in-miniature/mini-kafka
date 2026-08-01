@@ -1,0 +1,208 @@
+[project]
+name = "MiniKafka"
+package = "minikafka"
+repository_url = "https://github.com/system-in-miniature/mini-kafka"
+owned_roots = [
+  "src/minikafka",
+  "tests/unit",
+  "tests/log",
+  "tests/producer",
+  "tests/consumer",
+  "tests/replication",
+  "tests/transaction",
+  "tests/reliability",
+  "tests/adapters",
+]
+owned_files = [
+  "pyproject.toml",
+  "uv.lock",
+  "tests/test_direct_cluster.py",
+  "tests/test_final_acceptance.py",
+  "tests/test_sloc_report.py",
+]
+
+[[stages]]
+number = 1
+slug = "primitives"
+chapter = 1
+source = "53ca574"
+files = ["pyproject.toml", "uv.lock", "src/minikafka/__init__.py", "src/minikafka/clock.py", "src/minikafka/config.py", "src/minikafka/errors.py", "tests/unit/test_primitives.py"]
+tests = ["tests/unit/test_primitives.py"]
+
+[[stages]]
+number = 2
+slug = "record-batches"
+chapter = 2
+source = "37b902f"
+files = ["src/minikafka/core/__init__.py", "src/minikafka/core/batch.py", "src/minikafka/core/batch_codec.py", "src/minikafka/core/record.py", "src/minikafka/errors.py", "tests/unit/test_batch_codec.py"]
+tests = ["tests/unit/test_batch_codec.py"]
+
+[[stages]]
+number = 3
+slug = "offset-index"
+chapter = 2
+source = "44bb3df"
+files = ["src/minikafka/errors.py", "src/minikafka/log/__init__.py", "src/minikafka/log/index.py", "tests/unit/test_offset_index.py"]
+tests = ["tests/unit/test_offset_index.py"]
+
+[[stages]]
+number = 4
+slug = "recoverable-segments"
+chapter = 2
+source = "20861e5"
+files = ["src/minikafka/core/record.py", "src/minikafka/errors.py", "src/minikafka/log/recovery.py", "src/minikafka/log/segment.py", "tests/log/test_recovery.py", "tests/log/test_segment.py"]
+tests = ["tests/log/test_recovery.py", "tests/log/test_segment.py"]
+
+[[stages]]
+number = 5
+slug = "partition-log"
+chapter = 2
+source = "5a79c70"
+files = ["src/minikafka/config.py", "src/minikafka/log/partition_log.py", "tests/log/test_partition_log.py", "tests/reliability/test_log_restart.py"]
+tests = ["tests/log/test_partition_log.py", "tests/reliability/test_log_restart.py"]
+
+[[stages]]
+number = 6
+slug = "topic-administration"
+chapter = 1
+source = "09d30dc"
+files = ["src/minikafka/adapters/__init__.py", "src/minikafka/adapters/direct.py", "src/minikafka/config.py", "src/minikafka/core/cluster.py", "src/minikafka/core/metadata.py", "src/minikafka/errors.py", "tests/test_direct_cluster.py", "tests/unit/test_metadata.py"]
+tests = ["tests/test_direct_cluster.py", "tests/unit/test_metadata.py"]
+
+[[stages]]
+number = 7
+slug = "producer-batching"
+chapter = 4
+source = "f74516b"
+files = ["src/minikafka/core/cluster.py", "src/minikafka/errors.py", "src/minikafka/producer/__init__.py", "src/minikafka/producer/accumulator.py", "src/minikafka/producer/partitioner.py", "src/minikafka/producer/producer.py", "tests/producer/test_batching.py", "tests/producer/test_ordering.py", "tests/unit/test_partitioner.py"]
+tests = ["tests/producer/test_batching.py", "tests/producer/test_ordering.py", "tests/unit/test_partitioner.py"]
+
+[[stages]]
+number = 8
+slug = "consumer-positions"
+chapter = 7
+source = "70b6bd9"
+files = ["src/minikafka/consumer/__init__.py", "src/minikafka/consumer/consumer.py", "src/minikafka/consumer/offsets.py", "src/minikafka/core/cluster.py", "tests/consumer/test_delivery_semantics.py", "tests/consumer/test_positions.py", "tests/reliability/test_offset_restart.py"]
+tests = ["tests/consumer/test_delivery_semantics.py", "tests/consumer/test_positions.py", "tests/reliability/test_offset_restart.py"]
+
+[[stages]]
+number = 9
+slug = "consumer-groups"
+chapter = 7
+source = "09c6ab9"
+files = ["src/minikafka/config.py", "src/minikafka/consumer/assignor.py", "src/minikafka/consumer/consumer.py", "src/minikafka/consumer/group.py", "src/minikafka/core/cluster.py", "src/minikafka/errors.py", "tests/consumer/test_generation_fencing.py", "tests/consumer/test_group_rebalance.py", "tests/unit/test_assignor.py"]
+tests = ["tests/consumer/test_generation_fencing.py", "tests/consumer/test_group_rebalance.py", "tests/unit/test_assignor.py"]
+
+[[stages]]
+number = 10
+slug = "retention"
+chapter = 3
+source = "066472b"
+files = ["src/minikafka/log/partition_log.py", "src/minikafka/log/retention.py", "src/minikafka/log/segment.py", "tests/log/test_retention.py"]
+tests = ["tests/log/test_retention.py"]
+
+[[stages]]
+number = 11
+slug = "compaction"
+chapter = 3
+source = "bfb18a8"
+files = ["src/minikafka/core/batch.py", "src/minikafka/core/batch_codec.py", "src/minikafka/log/compaction.py", "src/minikafka/log/partition_log.py", "src/minikafka/log/segment.py", "tests/log/test_compaction.py", "tests/reliability/test_compaction_swap.py", "tests/unit/test_batch_codec.py"]
+tests = ["tests/log/test_compaction.py", "tests/reliability/test_compaction_swap.py", "tests/unit/test_batch_codec.py"]
+
+[[stages]]
+number = 12
+slug = "isr-high-watermark"
+chapter = 5
+source = "5c8634e"
+files = ["src/minikafka/config.py", "src/minikafka/core/cluster.py", "src/minikafka/producer/producer.py", "src/minikafka/replication/__init__.py", "src/minikafka/replication/model.py", "src/minikafka/replication/replica.py", "src/minikafka/replication/replica_set.py", "tests/replication/test_follower_fetch.py", "tests/replication/test_high_watermark.py", "tests/replication/test_isr.py"]
+tests = ["tests/replication/test_follower_fetch.py", "tests/replication/test_high_watermark.py", "tests/replication/test_isr.py"]
+
+[[stages]]
+number = 13
+slug = "ack-modes"
+chapter = 6
+source = "c94e229"
+files = ["src/minikafka/errors.py", "src/minikafka/producer/producer.py", "src/minikafka/replication/replica_set.py", "tests/reliability/test_lost_acked_write.py", "tests/replication/test_ack_modes.py"]
+tests = ["tests/reliability/test_lost_acked_write.py", "tests/replication/test_ack_modes.py"]
+
+[[stages]]
+number = 14
+slug = "promotion-fencing"
+chapter = 6
+source = "c758fa1"
+files = ["src/minikafka/core/cluster.py", "src/minikafka/errors.py", "src/minikafka/replication/replica_set.py", "tests/reliability/test_lost_acked_write.py", "tests/replication/test_divergent_tail.py", "tests/replication/test_promotion.py"]
+tests = ["tests/reliability/test_lost_acked_write.py", "tests/replication/test_divergent_tail.py", "tests/replication/test_promotion.py"]
+
+[[stages]]
+number = 15
+slug = "idempotent-producer"
+chapter = 4
+source = "40cf820"
+files = ["src/minikafka/core/cluster.py", "src/minikafka/errors.py", "src/minikafka/producer/producer.py", "src/minikafka/producer/state.py", "src/minikafka/replication/replica_set.py", "tests/producer/test_idempotence.py", "tests/reliability/test_producer_state_restart.py"]
+tests = ["tests/producer/test_idempotence.py", "tests/reliability/test_producer_state_restart.py"]
+
+[[stages]]
+number = 16
+slug = "transactions"
+chapter = 8
+source = "590005b"
+files = ["src/minikafka/consumer/offsets.py", "src/minikafka/core/cluster.py", "src/minikafka/transaction/__init__.py", "src/minikafka/transaction/journal.py", "src/minikafka/transaction/manager.py", "src/minikafka/transaction/model.py", "tests/reliability/test_transaction_restart.py", "tests/transaction/test_abort.py", "tests/transaction/test_offsets.py", "tests/transaction/test_visibility.py"]
+tests = ["tests/reliability/test_transaction_restart.py", "tests/transaction/test_abort.py", "tests/transaction/test_offsets.py", "tests/transaction/test_visibility.py"]
+
+[[stages]]
+number = 17
+slug = "json-tcp"
+chapter = 10
+source = "cb6fcc3"
+files = ["src/minikafka/adapters/json_tcp.py", "src/minikafka/errors.py", "tests/adapters/test_direct_tcp_parity.py", "tests/adapters/test_json_tcp.py"]
+tests = ["tests/adapters/test_direct_tcp_parity.py", "tests/adapters/test_json_tcp.py"]
+
+[[stages]]
+number = 18
+slug = "lifecycle-labs"
+chapter = 9
+source = "080df0e"
+files = ["src/minikafka/core/cluster.py", "src/minikafka/labs/__init__.py", "src/minikafka/labs/leader_failure.py", "src/minikafka/labs/rebalance.py", "src/minikafka/lifecycle.py", "src/minikafka/producer/producer.py", "tests/reliability/test_background_failure.py", "tests/reliability/test_shutdown.py"]
+tests = ["tests/reliability/test_background_failure.py", "tests/reliability/test_shutdown.py"]
+
+[[stages]]
+number = 19
+slug = "isr-regression"
+chapter = 6
+source = "f10ae02"
+files = ["src/minikafka/replication/replica_set.py", "tests/replication/test_promotion.py"]
+tests = ["tests/replication/test_promotion.py"]
+
+[[stages]]
+number = 20
+slug = "domain-closure"
+chapter = 9
+source = "HEAD"
+files = [
+  "pyproject.toml", "uv.lock", "src/minikafka/__init__.py",
+  "src/minikafka/adapters/__init__.py", "src/minikafka/adapters/direct.py", "src/minikafka/adapters/json_tcp.py",
+  "src/minikafka/clock.py", "src/minikafka/config.py",
+  "src/minikafka/consumer/__init__.py", "src/minikafka/consumer/assignor.py", "src/minikafka/consumer/consumer.py", "src/minikafka/consumer/group.py", "src/minikafka/consumer/offsets.py",
+  "src/minikafka/core/__init__.py", "src/minikafka/core/batch.py", "src/minikafka/core/batch_codec.py", "src/minikafka/core/cluster.py", "src/minikafka/core/metadata.py", "src/minikafka/core/record.py",
+  "src/minikafka/errors.py", "src/minikafka/labs/__init__.py", "src/minikafka/labs/leader_failure.py", "src/minikafka/labs/rebalance.py", "src/minikafka/lifecycle.py",
+  "src/minikafka/log/__init__.py", "src/minikafka/log/compaction.py", "src/minikafka/log/index.py", "src/minikafka/log/partition_log.py", "src/minikafka/log/recovery.py", "src/minikafka/log/retention.py", "src/minikafka/log/segment.py",
+  "src/minikafka/producer/__init__.py", "src/minikafka/producer/accumulator.py", "src/minikafka/producer/partitioner.py", "src/minikafka/producer/producer.py", "src/minikafka/producer/state.py",
+  "src/minikafka/replication/__init__.py", "src/minikafka/replication/model.py", "src/minikafka/replication/replica.py", "src/minikafka/replication/replica_set.py",
+  "src/minikafka/transaction/__init__.py", "src/minikafka/transaction/journal.py", "src/minikafka/transaction/manager.py", "src/minikafka/transaction/model.py",
+  "tests/adapters/test_direct_tcp_parity.py", "tests/adapters/test_json_tcp.py",
+  "tests/consumer/test_delivery_semantics.py", "tests/consumer/test_generation_fencing.py", "tests/consumer/test_group_rebalance.py", "tests/consumer/test_positions.py",
+  "tests/log/test_compaction.py", "tests/log/test_partition_log.py", "tests/log/test_recovery.py", "tests/log/test_retention.py", "tests/log/test_segment.py",
+  "tests/producer/test_batching.py", "tests/producer/test_idempotence.py", "tests/producer/test_ordering.py",
+  "tests/reliability/test_background_failure.py", "tests/reliability/test_compaction_swap.py", "tests/reliability/test_log_restart.py", "tests/reliability/test_lost_acked_write.py", "tests/reliability/test_offset_restart.py", "tests/reliability/test_producer_state_restart.py", "tests/reliability/test_shutdown.py", "tests/reliability/test_transaction_restart.py",
+  "tests/replication/test_ack_modes.py", "tests/replication/test_divergent_tail.py", "tests/replication/test_follower_fetch.py", "tests/replication/test_high_watermark.py", "tests/replication/test_isr.py", "tests/replication/test_promotion.py",
+  "tests/transaction/test_abort.py", "tests/transaction/test_offsets.py", "tests/transaction/test_visibility.py",
+  "tests/unit/test_assignor.py", "tests/unit/test_batch_codec.py", "tests/unit/test_metadata.py", "tests/unit/test_offset_index.py", "tests/unit/test_partitioner.py", "tests/unit/test_primitives.py",
+  "tests/test_direct_cluster.py", "tests/test_final_acceptance.py", "tests/test_sloc_report.py",
+]
+tests = [
+  "tests/test_final_acceptance.py::test_domain_closure_survives_rebalance_failover_and_restart",
+  "tests/test_final_acceptance.py::test_public_api_exports_semantic_types",
+  "tests/log/test_retention.py",
+  "tests/transaction/test_abort.py",
+  "tests/transaction/test_visibility.py",
+]

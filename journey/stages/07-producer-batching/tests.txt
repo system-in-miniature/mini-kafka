@@ -1,0 +1,3 @@
+tests/producer/test_batching.py
+tests/producer/test_ordering.py
+tests/unit/test_partitioner.py

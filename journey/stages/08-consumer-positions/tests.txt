@@ -1,0 +1,3 @@
+tests/consumer/test_delivery_semantics.py
+tests/consumer/test_positions.py
+tests/reliability/test_offset_restart.py

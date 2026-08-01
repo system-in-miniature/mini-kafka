@@ -1,0 +1,3 @@
+tests/reliability/test_lost_acked_write.py
+tests/replication/test_divergent_tail.py
+tests/replication/test_promotion.py

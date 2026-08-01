@@ -1,0 +1,614 @@
+diff --git a/src/minikafka/config.py b/src/minikafka/config.py
+index a209b81c134d32ee4258819e4ab9e595818a56a9..ba031891c6b9dde98499cc2c86cfb94d445a633e 100644
+--- a/src/minikafka/config.py
++++ b/src/minikafka/config.py
+@@ -10,6 +10,7 @@ class MiniKafkaConfig:
+     broker_ids: tuple[int, ...] = (1,)
+     segment_max_bytes: int = 1_048_576
+     index_interval_bytes: int = 4_096
++    group_session_timeout_ms: int = 10_000
+ 
+     def __post_init__(self) -> None:
+         if self.segment_max_bytes <= 0:
+@@ -22,3 +23,5 @@ class MiniKafkaConfig:
+             raise ValueError("broker_ids must be unique")
+         if any(broker_id < 0 for broker_id in self.broker_ids):
+             raise ValueError("broker_ids cannot be negative")
++        if self.group_session_timeout_ms <= 0:
++            raise ValueError("group_session_timeout_ms must be positive")
+diff --git a/src/minikafka/consumer/assignor.py b/src/minikafka/consumer/assignor.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e53603a182a27217cc1dfa60f9984bc39e26de8
+--- /dev/null
++++ b/src/minikafka/consumer/assignor.py
+@@ -0,0 +1,29 @@
++from __future__ import annotations
++
++from minikafka.core.metadata import TopicPartition
++
++
++def round_robin_assign(
++    members: dict[str, set[str]],
++    partitions: dict[str, tuple[int, ...]],
++) -> dict[str, tuple[TopicPartition, ...]]:
++    assigned: dict[str, list[TopicPartition]] = {
++        member_id: [] for member_id in sorted(members)
++    }
++    cursor = 0
++    for topic, topic_partitions in sorted(partitions.items()):
++        eligible = sorted(
++            member_id
++            for member_id, subscriptions in members.items()
++            if topic in subscriptions
++        )
++        if not eligible:
++            continue
++        for partition in sorted(topic_partitions):
++            member_id = eligible[cursor % len(eligible)]
++            assigned[member_id].append(TopicPartition(topic, partition))
++            cursor += 1
++    return {
++        member_id: tuple(topic_partitions)
++        for member_id, topic_partitions in assigned.items()
++    }
+diff --git a/src/minikafka/consumer/consumer.py b/src/minikafka/consumer/consumer.py
+index a73ef6cd391ba899af80373901d2cceb0f03c1af..be92a24c102c54a2bb549af87cfb63651edc0ce0 100644
+--- a/src/minikafka/consumer/consumer.py
++++ b/src/minikafka/consumer/consumer.py
+@@ -18,6 +18,7 @@ class Consumer:
+         group_id: str,
+         *,
+         auto_offset_reset: str,
++        member_id: str,
+     ) -> None:
+         if not group_id:
+             raise ValueError("group_id cannot be empty")
+@@ -25,16 +26,21 @@ class Consumer:
+             raise ValueError("auto_offset_reset must be earliest, latest, or error")
+         self.cluster = cluster
+         self.group_id = group_id
++        self.member_id = member_id
+         self.auto_offset_reset = auto_offset_reset
+         self._assignment: tuple[TopicPartition, ...] = ()
+         self._positions: dict[TopicPartition, int] = {}
+         self._closed = False
++        self._subscriptions: tuple[str, ...] = ()
++        self._generation: int | None = None
+ 
+     @property
+     def assignment(self) -> tuple[TopicPartition, ...]:
+         return self._assignment
+ 
+     def assign(self, partitions: Iterable[TopicPartition]) -> None:
++        if self._subscriptions:
++            raise ValueError("cannot directly assign a subscribed consumer")
+         assigned = tuple(sorted(set(partitions)))
+         for tp in assigned:
+             self.cluster.partition_metadata(tp)
+@@ -45,6 +51,45 @@ class Consumer:
+             if tp in assigned
+         }
+ 
++    async def subscribe(self, topics: Iterable[str]) -> None:
++        subscriptions = tuple(sorted(set(topics)))
++        joined = await self.cluster.groups.join(
++            self.group_id,
++            self.member_id,
++            subscriptions,
++        )
++        self._subscriptions = subscriptions
++        self._apply_join(joined.generation, joined.assignment)
++
++    async def refresh_assignment(self) -> None:
++        joined = self.cluster.groups.assignment(
++            self.group_id,
++            self.member_id,
++        )
++        self._apply_join(joined.generation, joined.assignment)
++
++    def _apply_join(
++        self,
++        generation: int,
++        assignment: tuple[TopicPartition, ...],
++    ) -> None:
++        self._generation = generation
++        self._assignment = assignment
++        self._positions = {
++            tp: position
++            for tp, position in self._positions.items()
++            if tp in assignment
++        }
++
++    async def heartbeat(self) -> None:
++        if self._generation is None:
++            raise ValueError("consumer has not joined a group")
++        await self.cluster.groups.heartbeat(
++            self.group_id,
++            self.member_id,
++            self._generation,
++        )
++
+     async def _initial_position(self, tp: TopicPartition) -> int:
+         committed = await self.committed(tp)
+         if committed is not None:
+@@ -114,13 +159,25 @@ class Consumer:
+         return await self.cluster.offsets.get(self.group_id, tp)
+ 
+     async def commit(self) -> None:
+-        await self.cluster.offsets.commit(
+-            self.group_id,
+-            dict(self._positions),
+-        )
++        if self._subscriptions:
++            if self._generation is None:
++                raise ValueError("consumer has not joined a group")
++            await self.cluster.groups.commit(
++                self.group_id,
++                self.member_id,
++                self._generation,
++                dict(self._positions),
++            )
++        else:
++            await self.cluster.offsets.commit(
++                self.group_id,
++                dict(self._positions),
++            )
+ 
+     async def lag(self, tp: TopicPartition) -> int:
+         return max(0, self.cluster.visible_end(tp) - self.position(tp))
+ 
+     async def close(self) -> None:
++        if self._subscriptions:
++            await self.cluster.groups.leave(self.group_id, self.member_id)
+         self._closed = True
+diff --git a/src/minikafka/consumer/group.py b/src/minikafka/consumer/group.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc42fd5e09857c6164d6e522ffa85df8cf1cc35d
+--- /dev/null
++++ b/src/minikafka/consumer/group.py
+@@ -0,0 +1,180 @@
++from __future__ import annotations
++
++from collections.abc import Callable, Iterable
++from dataclasses import dataclass, field
++from enum import Enum
++
++from minikafka.clock import Clock
++from minikafka.consumer.assignor import round_robin_assign
++from minikafka.consumer.offsets import OffsetStore
++from minikafka.core.metadata import TopicPartition
++from minikafka.errors import (
++    IllegalGeneration,
++    NotPartitionOwner,
++    RebalanceInProgress,
++    UnknownMember,
++)
++
++
++class GroupState(str, Enum):
++    EMPTY = "empty"
++    PREPARING_REBALANCE = "preparing_rebalance"
++    STABLE = "stable"
++
++
++@dataclass(slots=True)
++class GroupMember:
++    member_id: str
++    subscriptions: set[str]
++    deadline_ms: int
++
++
++@dataclass(slots=True)
++class Group:
++    group_id: str
++    generation: int = 0
++    state: GroupState = GroupState.EMPTY
++    members: dict[str, GroupMember] = field(default_factory=dict)
++    assignment: dict[str, tuple[TopicPartition, ...]] = field(
++        default_factory=dict
++    )
++
++
++@dataclass(frozen=True, slots=True)
++class JoinResult:
++    generation: int
++    assignment: tuple[TopicPartition, ...]
++
++
++class GroupCoordinator:
++    def __init__(
++        self,
++        *,
++        clock: Clock,
++        offset_store: OffsetStore,
++        topic_partitions: Callable[[], dict[str, tuple[int, ...]]],
++        session_timeout_ms: int,
++    ) -> None:
++        self.clock = clock
++        self.offset_store = offset_store
++        self.topic_partitions = topic_partitions
++        self.session_timeout_ms = session_timeout_ms
++        self._groups: dict[str, Group] = {}
++
++    async def join(
++        self,
++        group_id: str,
++        member_id: str,
++        subscriptions: Iterable[str],
++    ) -> JoinResult:
++        if not group_id or not member_id:
++            raise ValueError("group and member IDs cannot be empty")
++        requested = set(subscriptions)
++        known = self.topic_partitions()
++        missing = requested.difference(known)
++        if missing:
++            raise ValueError(f"unknown subscribed topics: {sorted(missing)}")
++        group = self._groups.setdefault(group_id, Group(group_id))
++        group.members[member_id] = GroupMember(
++            member_id,
++            requested,
++            self.clock.now_ms() + self.session_timeout_ms,
++        )
++        self._rebalance(group)
++        return self.assignment(group_id, member_id)
++
++    async def leave(self, group_id: str, member_id: str) -> None:
++        group = self._groups.get(group_id)
++        if group is None or member_id not in group.members:
++            return
++        del group.members[member_id]
++        self._rebalance(group)
++
++    async def heartbeat(
++        self,
++        group_id: str,
++        member_id: str,
++        generation: int,
++    ) -> None:
++        group = self._require_group(group_id)
++        self._validate_generation(group, generation)
++        try:
++            member = group.members[member_id]
++        except KeyError as error:
++            raise UnknownMember(member_id) from error
++        member.deadline_ms = self.clock.now_ms() + self.session_timeout_ms
++
++    async def expire_members(self) -> tuple[tuple[str, str], ...]:
++        now = self.clock.now_ms()
++        expired: list[tuple[str, str]] = []
++        for group_id, group in sorted(self._groups.items()):
++            removed = [
++                member_id
++                for member_id, member in group.members.items()
++                if now > member.deadline_ms
++            ]
++            for member_id in removed:
++                del group.members[member_id]
++                expired.append((group_id, member_id))
++            if removed:
++                self._rebalance(group)
++        return tuple(expired)
++
++    def assignment(self, group_id: str, member_id: str) -> JoinResult:
++        group = self._require_group(group_id)
++        if member_id not in group.members:
++            raise UnknownMember(member_id)
++        if group.state is not GroupState.STABLE:
++            raise RebalanceInProgress(group_id)
++        return JoinResult(
++            group.generation,
++            group.assignment.get(member_id, ()),
++        )
++
++    def state(self, group_id: str) -> GroupState:
++        return self._require_group(group_id).state
++
++    async def commit(
++        self,
++        group_id: str,
++        member_id: str,
++        generation: int,
++        offsets: dict[TopicPartition, int],
++    ) -> None:
++        group = self._require_group(group_id)
++        if group.state is not GroupState.STABLE:
++            raise RebalanceInProgress(group_id)
++        self._validate_generation(group, generation)
++        if member_id not in group.members:
++            raise UnknownMember(member_id)
++        owned = set(group.assignment.get(member_id, ()))
++        if not set(offsets).issubset(owned):
++            raise NotPartitionOwner(member_id)
++        await self.offset_store.commit(group_id, offsets)
++
++    def _require_group(self, group_id: str) -> Group:
++        try:
++            return self._groups[group_id]
++        except KeyError as error:
++            raise UnknownMember(f"unknown group {group_id}") from error
++
++    @staticmethod
++    def _validate_generation(group: Group, generation: int) -> None:
++        if generation != group.generation:
++            raise IllegalGeneration(generation, group.generation)
++
++    def _rebalance(self, group: Group) -> None:
++        group.state = GroupState.PREPARING_REBALANCE
++        group.generation += 1
++        if not group.members:
++            group.assignment = {}
++            group.state = GroupState.EMPTY
++            return
++        group.assignment = round_robin_assign(
++            {
++                member_id: member.subscriptions
++                for member_id, member in group.members.items()
++            },
++            self.topic_partitions(),
++        )
++        group.state = GroupState.STABLE
+diff --git a/src/minikafka/core/cluster.py b/src/minikafka/core/cluster.py
+index 5154543aa15d013bf2b1523d0181098e28cc1a9c..139651901a4e75f74bd62b9a60f61707e69a0376 100644
+--- a/src/minikafka/core/cluster.py
++++ b/src/minikafka/core/cluster.py
+@@ -5,6 +5,7 @@ from typing import Self
+ from minikafka.clock import Clock, SystemClock
+ from minikafka.config import MiniKafkaConfig
+ from minikafka.consumer.consumer import Consumer
++from minikafka.consumer.group import GroupCoordinator
+ from minikafka.consumer.offsets import OffsetStore
+ from minikafka.core.batch import RecordBatch
+ from minikafka.core.metadata import (
+@@ -42,8 +43,15 @@ class BrokerCluster:
+         self._logs = logs
+         self.clock = clock
+         self.offsets = offsets
++        self.groups = GroupCoordinator(
++            clock=clock,
++            offset_store=offsets,
++            topic_partitions=self._topic_partitions,
++            session_timeout_ms=config.group_session_timeout_ms,
++        )
+         self._producers: set[Producer] = set()
+         self._consumers: set[Consumer] = set()
++        self._next_member_id = 1
+         self._closed = False
+ 
+     @classmethod
+@@ -237,10 +245,21 @@ class BrokerCluster:
+             self,
+             group_id,
+             auto_offset_reset=auto_offset_reset,
++            member_id=f"member-{self._next_member_id}",
+         )
++        self._next_member_id += 1
+         self._consumers.add(consumer)
+         return consumer
+ 
++    def _topic_partitions(self) -> dict[str, tuple[int, ...]]:
++        return {
++            topic.name: tuple(sorted(topic.partitions))
++            for topic in self._topics.values()
++        }
++
++    async def expire_group_members(self) -> tuple[tuple[str, str], ...]:
++        return await self.groups.expire_members()
++
+     async def close(self) -> None:
+         if self._closed:
+             return
+diff --git a/src/minikafka/errors.py b/src/minikafka/errors.py
+index 0fa217d74974398910437c8c805e607ff122560f..e133be2438c4de1cd2d5c862e80d4726a29ae6a0 100644
+--- a/src/minikafka/errors.py
++++ b/src/minikafka/errors.py
+@@ -47,3 +47,22 @@ class UnknownPartition(MiniKafkaError):
+ 
+ class ProducerBufferFull(MiniKafkaError):
+     code = "PRODUCER_BUFFER_FULL"
++
++
++class RebalanceInProgress(MiniKafkaError):
++    code = "REBALANCE_IN_PROGRESS"
++
++
++class IllegalGeneration(MiniKafkaError):
++    code = "ILLEGAL_GENERATION"
++
++    def __init__(self, actual: int, expected: int) -> None:
++        super().__init__(f"generation {actual} does not match {expected}")
++
++
++class NotPartitionOwner(MiniKafkaError):
++    code = "NOT_PARTITION_OWNER"
++
++
++class UnknownMember(MiniKafkaError):
++    code = "UNKNOWN_MEMBER"
+diff --git a/tests/consumer/test_generation_fencing.py b/tests/consumer/test_generation_fencing.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a1eb1b7f3c9926e4309e823f3cc25f721ab11142
+--- /dev/null
++++ b/tests/consumer/test_generation_fencing.py
+@@ -0,0 +1,56 @@
++from pathlib import Path
++
++import pytest
++
++from minikafka.clock import ManualClock
++from minikafka.consumer.group import GroupCoordinator
++from minikafka.consumer.offsets import OffsetStore
++from minikafka.core.metadata import TopicPartition
++from minikafka.errors import IllegalGeneration, NotPartitionOwner
++
++
++@pytest.mark.asyncio
++async def test_old_generation_cannot_commit_after_rebalance(
++    tmp_path: Path,
++) -> None:
++    clock = ManualClock()
++    offsets = OffsetStore.open(tmp_path / "offsets.json")
++    groups = GroupCoordinator(
++        clock=clock,
++        offset_store=offsets,
++        topic_partitions=lambda: {"orders": (0, 1)},
++        session_timeout_ms=100,
++    )
++    old = await groups.join("g", "a", {"orders"})
++    await groups.join("g", "b", {"orders"})
++
++    with pytest.raises(IllegalGeneration):
++        await groups.commit(
++            "g",
++            "a",
++            old.generation,
++            {TopicPartition("orders", 0): 1},
++        )
++
++
++@pytest.mark.asyncio
++async def test_member_cannot_commit_partition_it_does_not_own(
++    tmp_path: Path,
++) -> None:
++    groups = GroupCoordinator(
++        clock=ManualClock(),
++        offset_store=OffsetStore.open(tmp_path / "offsets.json"),
++        topic_partitions=lambda: {"orders": (0, 1)},
++        session_timeout_ms=100,
++    )
++    await groups.join("g", "a", {"orders"})
++    joined_b = await groups.join("g", "b", {"orders"})
++    refreshed_a = groups.assignment("g", "a")
++
++    with pytest.raises(NotPartitionOwner):
++        await groups.commit(
++            "g",
++            "a",
++            refreshed_a.generation,
++            {joined_b.assignment[0]: 1},
++        )
+diff --git a/tests/consumer/test_group_rebalance.py b/tests/consumer/test_group_rebalance.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d12efe387f007b052d221e46cc2dcf82991fa9f
+--- /dev/null
++++ b/tests/consumer/test_group_rebalance.py
+@@ -0,0 +1,85 @@
++from pathlib import Path
++
++import pytest
++
++from minikafka.clock import ManualClock
++from minikafka.config import MiniKafkaConfig
++from minikafka.consumer.group import GroupCoordinator, GroupState
++from minikafka.consumer.offsets import OffsetStore
++from minikafka.core.cluster import BrokerCluster
++
++
++def coordinator(tmp_path: Path, clock: ManualClock) -> GroupCoordinator:
++    return GroupCoordinator(
++        clock=clock,
++        offset_store=OffsetStore.open(tmp_path / "offsets.json"),
++        topic_partitions=lambda: {"orders": (0, 1, 2, 3)},
++        session_timeout_ms=100,
++    )
++
++
++@pytest.mark.asyncio
++async def test_join_and_leave_rebalance_partition_ownership(tmp_path: Path) -> None:
++    clock = ManualClock()
++    groups = coordinator(tmp_path, clock)
++    first = await groups.join("g", "a", {"orders"})
++    assert len(first.assignment) == 4
++
++    second = await groups.join("g", "b", {"orders"})
++    refreshed = groups.assignment("g", "a")
++
++    assert second.generation == first.generation + 1
++    assert len(second.assignment) == 2
++    assert len(refreshed.assignment) == 2
++    assert set(second.assignment).isdisjoint(refreshed.assignment)
++
++    await groups.leave("g", "b")
++    assert len(groups.assignment("g", "a").assignment) == 4
++    assert groups.state("g") is GroupState.STABLE
++
++
++@pytest.mark.asyncio
++async def test_heartbeat_keeps_member_alive_until_new_deadline(
++    tmp_path: Path,
++) -> None:
++    clock = ManualClock()
++    groups = coordinator(tmp_path, clock)
++    joined = await groups.join("g", "a", {"orders"})
++    clock.advance_ms(80)
++    await groups.heartbeat("g", "a", joined.generation)
++    clock.advance_ms(80)
++
++    assert await groups.expire_members() == ()
++    assert groups.assignment("g", "a").assignment
++
++
++@pytest.mark.asyncio
++async def test_expiry_removes_member_and_rebalances(tmp_path: Path) -> None:
++    clock = ManualClock()
++    groups = coordinator(tmp_path, clock)
++    await groups.join("g", "a", {"orders"})
++    joined_b = await groups.join("g", "b", {"orders"})
++    await groups.heartbeat("g", "b", joined_b.generation)
++    clock.advance_ms(101)
++
++    expired = await groups.expire_members()
++
++    assert set(expired) == {("g", "a"), ("g", "b")}
++    assert groups.state("g") is GroupState.EMPTY
++
++
++@pytest.mark.asyncio
++async def test_cluster_consumers_refresh_group_assignment(tmp_path: Path) -> None:
++    config = MiniKafkaConfig(data_dir=tmp_path)
++    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
++        await cluster.create_topic("orders", 4, 1)
++        first = cluster.consumer(group_id="workers")
++        second = cluster.consumer(group_id="workers")
++
++        await first.subscribe(("orders",))
++        await second.subscribe(("orders",))
++        await first.refresh_assignment()
++
++        assert len(first.assignment) == 2
++        assert len(second.assignment) == 2
++        assert set(first.assignment).isdisjoint(second.assignment)
+diff --git a/tests/unit/test_assignor.py b/tests/unit/test_assignor.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..902b827cb8a7c9c3d4f6baaa499c84503d7136f2
+--- /dev/null
++++ b/tests/unit/test_assignor.py
+@@ -0,0 +1,29 @@
++from minikafka.consumer.assignor import round_robin_assign
++from minikafka.core.metadata import TopicPartition
++
++
++def test_round_robin_assignor_has_single_owner() -> None:
++    assignment = round_robin_assign(
++        members={"a": {"orders"}, "b": {"orders"}},
++        partitions={"orders": (0, 1, 2, 3)},
++    )
++
++    assert assignment["a"] == (
++        TopicPartition("orders", 0),
++        TopicPartition("orders", 2),
++    )
++    assert assignment["b"] == (
++        TopicPartition("orders", 1),
++        TopicPartition("orders", 3),
++    )
++    assert set(assignment["a"]).isdisjoint(assignment["b"])
++
++
++def test_assignor_respects_topic_subscriptions() -> None:
++    assignment = round_robin_assign(
++        members={"orders-only": {"orders"}, "all": {"orders", "payments"}},
++        partitions={"orders": (0, 1), "payments": (0,)},
++    )
++
++    assert TopicPartition("payments", 0) not in assignment["orders-only"]
++    assert TopicPartition("payments", 0) in assignment["all"]

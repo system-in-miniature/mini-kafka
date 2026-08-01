@@ -1,0 +1,3 @@
+tests/replication/test_follower_fetch.py
+tests/replication/test_high_watermark.py
+tests/replication/test_isr.py

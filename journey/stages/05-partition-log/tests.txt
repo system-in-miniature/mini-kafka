@@ -1,0 +1,2 @@
+tests/log/test_partition_log.py
+tests/reliability/test_log_restart.py

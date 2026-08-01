@@ -1,0 +1,2 @@
+tests/reliability/test_lost_acked_write.py
+tests/replication/test_ack_modes.py

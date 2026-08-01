@@ -1,0 +1,2 @@
+tests/producer/test_idempotence.py
+tests/reliability/test_producer_state_restart.py

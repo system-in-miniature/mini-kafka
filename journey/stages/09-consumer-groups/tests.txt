@@ -1,0 +1,3 @@
+tests/consumer/test_generation_fencing.py
+tests/consumer/test_group_rebalance.py
+tests/unit/test_assignor.py

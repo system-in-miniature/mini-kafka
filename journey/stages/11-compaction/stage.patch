@@ -1,0 +1,635 @@
+diff --git a/src/minikafka/core/batch.py b/src/minikafka/core/batch.py
+index 781df292087fc594bac0d22060e67abdb8a3d6dd..c5aef912cf51c7f1579d8dc1e7c65c4e9df84acc 100644
+--- a/src/minikafka/core/batch.py
++++ b/src/minikafka/core/batch.py
+@@ -15,6 +15,8 @@ class ControlType(str, Enum):
+ @dataclass(frozen=True, slots=True)
+ class RecordBatch:
+     records: tuple[Record, ...]
++    offset_deltas: tuple[int, ...] | None = None
++    last_offset_delta: int | None = None
+     base_offset: int | None = None
+     leader_epoch: int = -1
+     producer_id: int = -1
+@@ -33,6 +35,32 @@ class RecordBatch:
+             raise InvalidRecord("control batch requires a transaction ID")
+         if self.base_offset is not None and self.base_offset < 0:
+             raise InvalidRecord("base offset cannot be negative")
++        offset_deltas = self.offset_deltas
++        if offset_deltas is None:
++            offset_deltas = tuple(range(len(self.records)))
++            object.__setattr__(self, "offset_deltas", offset_deltas)
++        if len(offset_deltas) != len(self.records):
++            raise InvalidRecord("offset delta count must match record count")
++        if any(delta < 0 for delta in offset_deltas):
++            raise InvalidRecord("offset deltas cannot be negative")
++        if tuple(sorted(set(offset_deltas))) != offset_deltas:
++            raise InvalidRecord("offset deltas must be strictly increasing")
++        last_offset_delta = self.last_offset_delta
++        if last_offset_delta is None:
++            last_offset_delta = (
++                max(offset_deltas, default=-1)
++                if self.control is None
++                else 0
++            )
++            object.__setattr__(
++                self,
++                "last_offset_delta",
++                last_offset_delta,
++            )
++        if last_offset_delta < 0:
++            raise InvalidRecord("last offset delta cannot be negative")
++        if offset_deltas and offset_deltas[-1] > last_offset_delta:
++            raise InvalidRecord("record offset exceeds last offset delta")
+ 
+     @classmethod
+     def unassigned(
+@@ -73,7 +101,9 @@ class RecordBatch:
+ 
+     @property
+     def logical_count(self) -> int:
+-        return max(1, len(self.records))
++        if self.last_offset_delta is None:
++            raise InvalidRecord("batch has no last offset delta")
++        return self.last_offset_delta + 1
+ 
+     @property
+     def next_offset(self) -> int:
+diff --git a/src/minikafka/core/batch_codec.py b/src/minikafka/core/batch_codec.py
+index 31f84355ba9c039f48aa1a557c716a91b771f483..abbda4478511e10ce56c1d609a3d2bee94728dc1 100644
+--- a/src/minikafka/core/batch_codec.py
++++ b/src/minikafka/core/batch_codec.py
+@@ -11,8 +11,8 @@ from minikafka.errors import CorruptBatch, InvalidRecord
+ MAGIC = b"MKB1"
+ FORMAT_VERSION = 1
+ FRAME_HEADER = struct.Struct(">4sII")
+-PAYLOAD_HEADER = struct.Struct(">BqIqiiBHI")
+-RECORD_HEADER = struct.Struct(">qiiH")
++PAYLOAD_HEADER = struct.Struct(">BqIqiiBiHI")
++RECORD_HEADER = struct.Struct(">iqiiH")
+ HEADER_KEY_LENGTH = struct.Struct(">H")
+ HEADER_VALUE_LENGTH = struct.Struct(">i")
+ 
+@@ -57,16 +57,24 @@ def encode_batch(batch: RecordBatch) -> bytes:
+             batch.producer_epoch,
+             batch.base_sequence,
+             flags,
++            batch.last_offset_delta,
+             len(transaction_id),
+             len(batch.records),
+         )
+     )
+     payload.extend(transaction_id)
+-    for record in batch.records:
++    if batch.offset_deltas is None:
++        raise InvalidRecord("batch has no offset deltas")
++    for offset_delta, record in zip(
++        batch.offset_deltas,
++        batch.records,
++        strict=True,
++    ):
+         key_length, key = _pack_optional_bytes(record.key)
+         value_length, value = _pack_optional_bytes(record.value)
+         payload.extend(
+             RECORD_HEADER.pack(
++                offset_delta,
+                 record.timestamp_ms,
+                 key_length,
+                 value_length,
+@@ -143,6 +151,7 @@ def decode_batch(encoded: bytes, *, max_batch_bytes: int = 16_777_216) -> Record
+         producer_epoch,
+         base_sequence,
+         flags,
++        last_offset_delta,
+         transaction_id_length,
+         record_count,
+     ) = reader.unpack(PAYLOAD_HEADER)
+@@ -161,10 +170,15 @@ def decode_batch(encoded: bytes, *, max_batch_bytes: int = 16_777_216) -> Record
+         raise CorruptBatch("transaction ID present without transactional flag")
+ 
+     records: list[Record] = []
++    offset_deltas: list[int] = []
+     for _ in range(record_count):
+-        timestamp_ms, key_length, value_length, header_count = reader.unpack(
+-            RECORD_HEADER
+-        )
++        (
++            offset_delta,
++            timestamp_ms,
++            key_length,
++            value_length,
++            header_count,
++        ) = reader.unpack(RECORD_HEADER)
+         key = _read_optional(reader, key_length)
+         value = _read_optional(reader, value_length)
+         headers: list[Header] = []
+@@ -179,6 +193,7 @@ def decode_batch(encoded: bytes, *, max_batch_bytes: int = 16_777_216) -> Record
+                 raise CorruptBatch("invalid header key encoding") from error
+             headers.append(Header(header_key, header_value))
+         records.append(Record(key, value, timestamp_ms, tuple(headers)))
++        offset_deltas.append(offset_delta)
+     if reader.remaining:
+         raise CorruptBatch("batch contains trailing bytes")
+ 
+@@ -195,6 +210,8 @@ def decode_batch(encoded: bytes, *, max_batch_bytes: int = 16_777_216) -> Record
+     try:
+         return RecordBatch(
+             records=tuple(records),
++            offset_deltas=tuple(offset_deltas),
++            last_offset_delta=last_offset_delta,
+             base_offset=base_offset,
+             leader_epoch=leader_epoch,
+             producer_id=producer_id,
+diff --git a/src/minikafka/log/compaction.py b/src/minikafka/log/compaction.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc977c1966055e1b95486824e48f0bf4523de5ce
+--- /dev/null
++++ b/src/minikafka/log/compaction.py
+@@ -0,0 +1,114 @@
++from __future__ import annotations
++
++from collections.abc import Callable, Iterable
++from dataclasses import dataclass, replace
++
++from minikafka.clock import Clock
++from minikafka.core.batch import RecordBatch
++from minikafka.log.partition_log import PartitionLog
++
++
++@dataclass(frozen=True, slots=True)
++class CompactionResult:
++    source_segments: tuple[int, ...]
++    records_before: int
++    records_after: int
++
++
++class LogCompactor:
++    def __init__(
++        self,
++        clock: Clock,
++        *,
++        delete_retention_ms: int,
++        before_swap: Callable[[], None] | None = None,
++    ) -> None:
++        if delete_retention_ms < 0:
++            raise ValueError("delete_retention_ms cannot be negative")
++        self.clock = clock
++        self.delete_retention_ms = delete_retention_ms
++        self.before_swap = before_swap
++
++    def compact(self, log: PartitionLog) -> CompactionResult:
++        source = tuple(log.closed_segments)
++        if not source:
++            return CompactionResult((), 0, 0)
++        latest = self._latest_offsets(
++            located.batch
++            for segment in log.segments
++            for located in segment.iter_batches()
++        )
++        compacted: list[RecordBatch] = []
++        records_before = 0
++        records_after = 0
++        for segment in source:
++            for located in segment.iter_batches():
++                batch = located.batch
++                records_before += len(batch.records)
++                rewritten = self._compact_batch(batch, latest)
++                if rewritten is not None:
++                    compacted.append(rewritten)
++                    records_after += len(rewritten.records)
++        log.install_compacted_closed(
++            tuple(compacted),
++            before_swap=self.before_swap,
++        )
++        return CompactionResult(
++            tuple(segment.base_offset for segment in source),
++            records_before,
++            records_after,
++        )
++
++    @staticmethod
++    def _latest_offsets(
++        batches: Iterable[RecordBatch],
++    ) -> dict[bytes, int]:
++        latest: dict[bytes, int] = {}
++        for batch in batches:
++            if batch.base_offset is None or batch.offset_deltas is None:
++                continue
++            for delta, record in zip(
++                batch.offset_deltas,
++                batch.records,
++                strict=True,
++            ):
++                if record.key is not None:
++                    latest[record.key] = batch.base_offset + delta
++        return latest
++
++    def _compact_batch(
++        self,
++        batch: RecordBatch,
++        latest: dict[bytes, int],
++    ) -> RecordBatch | None:
++        if batch.control is not None:
++            return batch
++        if batch.base_offset is None or batch.offset_deltas is None:
++            return batch
++        records = []
++        deltas = []
++        for delta, record in zip(
++            batch.offset_deltas,
++            batch.records,
++            strict=True,
++        ):
++            offset = batch.base_offset + delta
++            keep = record.key is None or latest.get(record.key) == offset
++            if (
++                keep
++                and record.key is not None
++                and record.value is None
++                and self.clock.now_ms() - record.timestamp_ms
++                > self.delete_retention_ms
++            ):
++                keep = False
++            if keep:
++                records.append(record)
++                deltas.append(delta)
++        if not records:
++            return None
++        return replace(
++            batch,
++            records=tuple(records),
++            offset_deltas=tuple(deltas),
++        )
+diff --git a/src/minikafka/log/partition_log.py b/src/minikafka/log/partition_log.py
+index f55c17f40aedcd11ca2f0b3faf00a4424cb2ebe6..a0bf100f3558690d3e87afea16d8b2c448954579 100644
+--- a/src/minikafka/log/partition_log.py
++++ b/src/minikafka/log/partition_log.py
+@@ -1,5 +1,9 @@
+ from __future__ import annotations
+ 
++import os
++import shutil
++import uuid
++from collections.abc import Callable
+ from pathlib import Path
+ 
+ from minikafka.config import MiniKafkaConfig
+@@ -57,7 +61,7 @@ class PartitionLog:
+                     config.index_interval_bytes,
+                     active=index == len(bases) - 1,
+                 )
+-                if segments and base != segments[-1].leo:
++                if segments and base < segments[-1].leo:
+                     for opened in segments:
+                         opened.close()
+                     segment.close()
+@@ -130,6 +134,11 @@ class PartitionLog:
+             )
+         )
+ 
++    def roll(self) -> None:
++        if not self.active.has_data:
++            return
++        self._roll(self.leo)
++
+     def fetch(
+         self,
+         offset: int,
+@@ -203,6 +212,11 @@ class PartitionLog:
+             return
+         batches = self.all_batches()
+         boundaries = {self.log_start_offset, self.leo}
++        boundaries.update(
++            batch.base_offset
++            for batch in batches
++            if batch.base_offset is not None
++        )
+         boundaries.update(batch.next_offset for batch in batches)
+         if next_offset not in boundaries:
+             raise InvalidRecord(
+@@ -262,6 +276,76 @@ class PartitionLog:
+                 path.unlink(missing_ok=True)
+         return tuple(sorted(requested))
+ 
++    def install_compacted_closed(
++        self,
++        compacted_batches: tuple[RecordBatch, ...],
++        *,
++        before_swap: Callable[[], None] | None = None,
++    ) -> None:
++        if not self.closed_segments:
++            return
++        parent = self.directory.parent
++        token = uuid.uuid4().hex
++        temporary = parent / f".{self.directory.name}.compact-{token}"
++        backup = parent / f".{self.directory.name}.backup-{token}"
++        temporary.mkdir(parents=True)
++        built: list[Segment] = []
++        try:
++            compacted = Segment.create(
++                temporary,
++                self.log_start_offset,
++                self.config.index_interval_bytes,
++            )
++            built.append(compacted)
++            for batch in compacted_batches:
++                compacted.append(batch, allow_gap=True)
++            compacted.flush()
++
++            active_copy = Segment.create(
++                temporary,
++                self.active.base_offset,
++                self.config.index_interval_bytes,
++            )
++            built.append(active_copy)
++            for located in self.active.iter_batches():
++                active_copy.append(located.batch, allow_gap=True)
++            active_copy.flush()
++            for segment in built:
++                segment.close()
++            built.clear()
++
++            if before_swap is not None:
++                before_swap()
++
++            for segment in self._segments:
++                segment.close()
++            os.replace(self.directory, backup)
++            try:
++                os.replace(temporary, self.directory)
++            except BaseException:
++                os.replace(backup, self.directory)
++                raise
++            directory_fd = os.open(parent, os.O_RDONLY)
++            try:
++                os.fsync(directory_fd)
++            finally:
++                os.close(directory_fd)
++
++            reopened = PartitionLog.open(
++                self.directory,
++                self.config,
++                leader_epoch=self.leader_epoch,
++            )
++            self._segments = list(reopened._segments)
++            reopened._segments = []
++            shutil.rmtree(backup)
++        except BaseException:
++            for segment in built:
++                segment.close()
++            if temporary.exists():
++                shutil.rmtree(temporary)
++            raise
++
+     def flush(self) -> None:
+         for segment in self._segments:
+             segment.flush()
+diff --git a/src/minikafka/log/segment.py b/src/minikafka/log/segment.py
+index f05b248140dbd61b611ace58eab09792aa4fcd0f..bdf6fb66ed7694ac89dbd7cd25888ae5c8ae15a7 100644
+--- a/src/minikafka/log/segment.py
++++ b/src/minikafka/log/segment.py
+@@ -112,9 +112,12 @@ class Segment:
+                 item = _read_located_batch(log_file, position)
+                 if item is None:
+                     break
+-                if item.batch.base_offset != expected_offset:
++                if (
++                    item.batch.base_offset is None
++                    or item.batch.base_offset < expected_offset
++                ):
+                     raise CorruptBatch(
+-                        "segment batch offsets are not contiguous"
++                        "segment batch offsets overlap or move backwards"
+                     )
+                 located.append(item)
+                 expected_offset = item.batch.next_offset
+@@ -187,8 +190,18 @@ class Segment:
+         )
+         return self.size_bytes + index_size
+ 
+-    def append(self, batch: RecordBatch) -> BatchLocation:
+-        if batch.base_offset != self.leo:
++    def append(
++        self,
++        batch: RecordBatch,
++        *,
++        allow_gap: bool = False,
++    ) -> BatchLocation:
++        invalid_offset = (
++            batch.base_offset is None
++            or batch.base_offset < self.leo
++            or (not allow_gap and batch.base_offset != self.leo)
++        )
++        if invalid_offset:
+             raise InvalidRecord(
+                 f"expected base offset {self.leo}, got {batch.base_offset}"
+             )
+@@ -226,7 +239,13 @@ class Segment:
+         for item in self.iter_batches(offset):
+             if item.batch.base_offset is None:
+                 raise StorageError("stored batch has no base offset")
+-            for delta, record in enumerate(item.batch.records):
++            if item.batch.offset_deltas is None:
++                raise StorageError("stored batch has no offset deltas")
++            for delta, record in zip(
++                item.batch.offset_deltas,
++                item.batch.records,
++                strict=True,
++            ):
+                 record_offset = item.batch.base_offset + delta
+                 if record_offset >= offset:
+                     records.append(
+diff --git a/tests/log/test_compaction.py b/tests/log/test_compaction.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0a24b38ac8df79004a288e421cf25b35ab27cf5a
+--- /dev/null
++++ b/tests/log/test_compaction.py
+@@ -0,0 +1,97 @@
++from pathlib import Path
++
++from minikafka.clock import ManualClock
++from minikafka.config import MiniKafkaConfig
++from minikafka.core.batch import RecordBatch
++from minikafka.core.record import Record
++from minikafka.log.compaction import LogCompactor
++from minikafka.log.partition_log import PartitionLog
++
++
++def compactable_log(tmp_path: Path) -> PartitionLog:
++    config = MiniKafkaConfig(
++        data_dir=tmp_path,
++        segment_max_bytes=160,
++        index_interval_bytes=1,
++    )
++    return PartitionLog.open(tmp_path / "state-0", config)
++
++
++def append_records(
++    log: PartitionLog,
++    records: tuple[tuple[bytes | None, bytes | None, int], ...],
++) -> None:
++    log.append(
++        RecordBatch.unassigned(
++            tuple(Record(key, value, timestamp) for key, value, timestamp in records)
++        )
++    )
++
++
++def test_compaction_preserves_latest_key_and_original_offsets(
++    tmp_path: Path,
++) -> None:
++    log = compactable_log(tmp_path)
++    append_records(log, ((b"a", b"1", 0), (b"b", b"x", 1)))
++    log.roll()
++    append_records(log, ((b"a", b"2", 2), (None, b"event", 3)))
++    log.roll()
++    append_records(log, ((b"active", b"keep", 4),))
++
++    LogCompactor(ManualClock(10), delete_retention_ms=1000).compact(log)
++
++    assert [
++        (record.offset, record.key, record.value)
++        for record in log.fetch(0, 10)
++    ] == [
++        (1, b"b", b"x"),
++        (2, b"a", b"2"),
++        (3, None, b"event"),
++        (4, b"active", b"keep"),
++    ]
++    assert log.leo == 5
++    log.close()
++
++
++def test_recent_tombstone_is_retained(tmp_path: Path) -> None:
++    log = compactable_log(tmp_path)
++    append_records(log, ((b"a", b"1", 0), (b"a", None, 100)))
++    log.roll()
++    append_records(log, ((b"active", b"x", 101),))
++
++    LogCompactor(ManualClock(500), delete_retention_ms=1000).compact(log)
++
++    records = log.fetch(0, 10)
++    assert [(record.offset, record.value) for record in records[:-1]] == [
++        (1, None)
++    ]
++    log.close()
++
++
++def test_expired_tombstone_removes_key_history(tmp_path: Path) -> None:
++    log = compactable_log(tmp_path)
++    append_records(log, ((b"a", b"1", 0), (b"a", None, 100)))
++    log.roll()
++    append_records(log, ((b"active", b"x", 2000),))
++
++    LogCompactor(ManualClock(2000), delete_retention_ms=1000).compact(log)
++
++    assert [(record.key, record.value) for record in log.fetch(0, 10)] == [
++        (b"active", b"x")
++    ]
++    log.close()
++
++
++def test_active_segment_is_not_cleaned(tmp_path: Path) -> None:
++    log = compactable_log(tmp_path)
++    append_records(log, ((b"a", b"old", 0),))
++    log.roll()
++    append_records(log, ((b"a", b"active-new", 1), (b"a", b"active-newer", 2)))
++
++    LogCompactor(ManualClock(3), delete_retention_ms=1000).compact(log)
++
++    assert [(record.offset, record.value) for record in log.fetch(0, 10)] == [
++        (1, b"active-new"),
++        (2, b"active-newer"),
++    ]
++    log.close()
+diff --git a/tests/reliability/test_compaction_swap.py b/tests/reliability/test_compaction_swap.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3a37a6082f85723e43aa89abb06d81019ca26ada
+--- /dev/null
++++ b/tests/reliability/test_compaction_swap.py
+@@ -0,0 +1,60 @@
++from pathlib import Path
++
++import pytest
++
++from minikafka.clock import ManualClock
++from minikafka.config import MiniKafkaConfig
++from minikafka.core.batch import RecordBatch
++from minikafka.core.record import Record
++from minikafka.log.compaction import LogCompactor
++from minikafka.log.partition_log import PartitionLog
++
++
++def test_failure_before_swap_leaves_original_log_authoritative(
++    tmp_path: Path,
++) -> None:
++    config = MiniKafkaConfig(
++        data_dir=tmp_path,
++        segment_max_bytes=100,
++        index_interval_bytes=1,
++    )
++    directory = tmp_path / "state-0"
++    log = PartitionLog.open(directory, config)
++    for value in (b"one", b"two", b"three"):
++        log.append(
++            RecordBatch.unassigned((Record(b"k", value, 0),))
++        )
++    original = [(record.offset, record.value) for record in log.fetch(0, 10)]
++
++    def fail() -> None:
++        raise OSError("injected before swap")
++
++    with pytest.raises(OSError, match="injected"):
++        LogCompactor(
++            ManualClock(),
++            delete_retention_ms=1000,
++            before_swap=fail,
++        ).compact(log)
++
++    assert [(record.offset, record.value) for record in log.fetch(0, 10)] == original
++    log.close()
++
++
++def test_compacted_log_survives_restart(tmp_path: Path) -> None:
++    config = MiniKafkaConfig(
++        data_dir=tmp_path,
++        segment_max_bytes=100,
++        index_interval_bytes=1,
++    )
++    directory = tmp_path / "state-0"
++    log = PartitionLog.open(directory, config)
++    for value in (b"one", b"two", b"three"):
++        log.append(RecordBatch.unassigned((Record(b"k", value, 0),)))
++    LogCompactor(ManualClock(), delete_retention_ms=1000).compact(log)
++    expected = [(record.offset, record.value) for record in log.fetch(0, 10)]
++    log.close()
++
++    reopened = PartitionLog.open(directory, config)
++
++    assert [(record.offset, record.value) for record in reopened.fetch(0, 10)] == expected
++    reopened.close()
+diff --git a/tests/unit/test_batch_codec.py b/tests/unit/test_batch_codec.py
+index bbd23d5e4d25ac6cbcd280238fd369889f3a14dc..5950736cb79924827aa822cffdd2833c3c6e0320 100644
+--- a/tests/unit/test_batch_codec.py
++++ b/tests/unit/test_batch_codec.py
+@@ -86,3 +86,20 @@ def test_unknown_format_version_is_rejected() -> None:
+         encode_batch(changed)
+ 
+     assert encoded.startswith(b"MKB1")
++
++
++def test_compacted_batch_preserves_offset_gaps_and_logical_end() -> None:
++    batch = RecordBatch(
++        records=(
++            Record(key=b"a", value=b"new", timestamp_ms=2),
++            Record(key=None, value=b"event", timestamp_ms=4),
++        ),
++        offset_deltas=(2, 4),
++        last_offset_delta=4,
++    ).assign(base_offset=10, leader_epoch=1)
++
++    decoded = decode_batch(encode_batch(batch))
++
++    assert decoded.offset_deltas == (2, 4)
++    assert decoded.last_offset_delta == 4
++    assert decoded.next_offset == 15

@@ -1,0 +1,51 @@
+diff --git a/src/minikafka/replication/replica_set.py b/src/minikafka/replication/replica_set.py
+index 51e1a0002e30d9a7f220918f61ce0477590eaebc..97c678d2d3e18568bfb96916463e64718d0bf8b6 100644
+--- a/src/minikafka/replication/replica_set.py
++++ b/src/minikafka/replication/replica_set.py
+@@ -199,7 +199,8 @@ class PartitionReplicaSet:
+                 now - follower.last_fetch_ms
+                 <= self.config.replica_lag_time_ms
+             )
+-            if within_offset and within_time:
++            has_committed_prefix = follower.leo >= self.high_watermark
++            if within_offset and within_time and has_committed_prefix:
+                 next_isr.add(follower.broker_id)
+         self._isr = next_isr
+         for broker_id, replica in self.replicas.items():
+diff --git a/tests/replication/test_promotion.py b/tests/replication/test_promotion.py
+index 4ff2b19397fcf372f8bda749f6b7375832ae55bf..11407d3270a31329ad60b0d41d28e1afca781352 100644
+--- a/tests/replication/test_promotion.py
++++ b/tests/replication/test_promotion.py
+@@ -29,6 +29,32 @@ async def test_only_isr_replica_can_be_promoted(tmp_path: Path) -> None:
+             await cluster.promote(tp, broker_id=2)
+ 
+ 
++@pytest.mark.asyncio
++async def test_replica_behind_high_watermark_cannot_reenter_isr(
++    tmp_path: Path,
++) -> None:
++    config = MiniKafkaConfig(
++        data_dir=tmp_path,
++        broker_ids=(1, 2),
++        replica_lag_max_offsets=10,
++    )
++    async with BrokerCluster.open(config, clock=ManualClock()) as cluster:
++        await cluster.create_topic("events", 1, 2)
++        tp = TopicPartition("events", 0)
++        replica_set = cluster.replica_set(tp)
++        await replica_set.append(batch(b"committed"), AckMode.LEADER)
++        await replica_set.fetch_followers_once()
++        assert replica_set.high_watermark == 1
++        replica_set.remove_from_isr(2)
++        replica_set.replicas[2].log.truncate_to(0)
++
++        replica_set.refresh_isr()
++
++        assert 2 not in replica_set.isr
++        with pytest.raises(NotInSyncReplica):
++            await cluster.promote(tp, broker_id=2)
++
++
+ @pytest.mark.asyncio
+ async def test_promotion_increments_epoch_and_fences_old_requests(
+     tmp_path: Path,

@@ -1,0 +1,2 @@
+tests/test_direct_cluster.py
+tests/unit/test_metadata.py

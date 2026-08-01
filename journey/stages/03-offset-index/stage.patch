@@ -1,0 +1,193 @@
+diff --git a/src/minikafka/errors.py b/src/minikafka/errors.py
+index 0f6804c028768cd9afa88d49f1b4d40f8f5985e7..e377e7caeebee4b88ea6bb9b1c4fb8a7336f03c7 100644
+--- a/src/minikafka/errors.py
++++ b/src/minikafka/errors.py
+@@ -23,3 +23,7 @@ class InvalidRecord(MiniKafkaError):
+ 
+ class CorruptBatch(MiniKafkaError):
+     code = "CORRUPT_BATCH"
++
++
++class CorruptIndex(MiniKafkaError):
++    code = "CORRUPT_INDEX"
+diff --git a/src/minikafka/log/__init__.py b/src/minikafka/log/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6092dc28ebd7df90e7293bc98fac2b4ec31a08cd
+--- /dev/null
++++ b/src/minikafka/log/__init__.py
+@@ -0,0 +1 @@
++"""Disk-backed partition log components."""
+diff --git a/src/minikafka/log/index.py b/src/minikafka/log/index.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0cc6ccbd9f5fd3129d6aa0c177ffc1cefc3f3235
+--- /dev/null
++++ b/src/minikafka/log/index.py
+@@ -0,0 +1,101 @@
++from __future__ import annotations
++
++import os
++import struct
++from bisect import bisect_right
++from pathlib import Path
++from typing import BinaryIO
++
++from minikafka.errors import CorruptIndex
++
++ENTRY = struct.Struct(">IQ")
++
++
++class OffsetIndex:
++    def __init__(
++        self,
++        path: Path,
++        base_offset: int,
++        file: BinaryIO,
++        entries: list[tuple[int, int]],
++    ) -> None:
++        self.path = path
++        self.base_offset = base_offset
++        self._file = file
++        self._entries = entries
++
++    @classmethod
++    def create(cls, path: Path, base_offset: int) -> OffsetIndex:
++        path.parent.mkdir(parents=True, exist_ok=True)
++        return cls(path, base_offset, path.open("w+b"), [])
++
++    @classmethod
++    def open(cls, path: Path, base_offset: int) -> OffsetIndex:
++        file = path.open("r+b")
++        data = file.read()
++        if len(data) % ENTRY.size:
++            file.close()
++            raise CorruptIndex(f"partial index entry in {path}")
++        entries: list[tuple[int, int]] = []
++        previous_relative = -1
++        previous_position = -1
++        for cursor in range(0, len(data), ENTRY.size):
++            relative, position = ENTRY.unpack_from(data, cursor)
++            if relative <= previous_relative or position <= previous_position:
++                file.close()
++                raise CorruptIndex(f"non-monotonic index entries in {path}")
++            entries.append((relative, position))
++            previous_relative = relative
++            previous_position = position
++        file.seek(0, os.SEEK_END)
++        return cls(path, base_offset, file, entries)
++
++    @property
++    def entries(self) -> tuple[tuple[int, int], ...]:
++        return tuple(
++            (self.base_offset + relative, position)
++            for relative, position in self._entries
++        )
++
++    def append(self, offset: int, position: int) -> None:
++        relative = offset - self.base_offset
++        if relative < 0 or relative > 0xFFFFFFFF:
++            raise ValueError("relative offset out of range")
++        if position < 0:
++            raise ValueError("position cannot be negative")
++        if self._entries and (
++            relative <= self._entries[-1][0]
++            or position <= self._entries[-1][1]
++        ):
++            raise ValueError("index entries must be monotonic")
++        self._file.write(ENTRY.pack(relative, position))
++        self._entries.append((relative, position))
++
++    def floor_position(self, offset: int) -> int:
++        if not self._entries:
++            return 0
++        relative = offset - self.base_offset
++        index = bisect_right(self._entries, (relative, 2**64 - 1)) - 1
++        if index < 0:
++            return 0
++        return self._entries[index][1]
++
++    def truncate_to(self, offset: int) -> None:
++        keep = 0
++        for relative, _ in self._entries:
++            if self.base_offset + relative >= offset:
++                break
++            keep += 1
++        if keep == len(self._entries):
++            return
++        del self._entries[keep:]
++        self._file.truncate(keep * ENTRY.size)
++        self._file.seek(0, os.SEEK_END)
++
++    def flush(self) -> None:
++        self._file.flush()
++        os.fsync(self._file.fileno())
++
++    def close(self) -> None:
++        if not self._file.closed:
++            self._file.close()
+diff --git a/tests/unit/test_offset_index.py b/tests/unit/test_offset_index.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a54c495ce9a4a0d5eefa95d5bb98b6c4084108a9
+--- /dev/null
++++ b/tests/unit/test_offset_index.py
+@@ -0,0 +1,61 @@
++from pathlib import Path
++
++import pytest
++
++from minikafka.errors import CorruptIndex
++from minikafka.log.index import OffsetIndex
++
++
++def test_sparse_index_returns_floor_position(tmp_path: Path) -> None:
++    path = tmp_path / "000.index"
++    index = OffsetIndex.create(path, base_offset=100)
++    index.append(offset=100, position=0)
++    index.append(offset=110, position=512)
++    index.append(offset=125, position=900)
++
++    assert index.floor_position(99) == 0
++    assert index.floor_position(100) == 0
++    assert index.floor_position(117) == 512
++    assert index.floor_position(125) == 900
++
++    index.close()
++    reopened = OffsetIndex.open(path, base_offset=100)
++    assert reopened.floor_position(125) == 900
++    reopened.close()
++
++
++def test_index_rejects_non_monotonic_entries(tmp_path: Path) -> None:
++    index = OffsetIndex.create(tmp_path / "000.index", base_offset=0)
++    index.append(offset=5, position=20)
++
++    with pytest.raises(ValueError, match="monotonic"):
++        index.append(offset=4, position=30)
++
++    with pytest.raises(ValueError, match="monotonic"):
++        index.append(offset=6, position=20)
++
++    index.close()
++
++
++def test_index_rejects_partial_entry(tmp_path: Path) -> None:
++    path = tmp_path / "000.index"
++    path.write_bytes(b"\x00\x00\x00")
++
++    with pytest.raises(CorruptIndex, match="partial"):
++        OffsetIndex.open(path, base_offset=0)
++
++
++def test_index_can_be_truncated_and_flushed(tmp_path: Path) -> None:
++    path = tmp_path / "000.index"
++    index = OffsetIndex.create(path, base_offset=0)
++    index.append(0, 0)
++    index.append(10, 100)
++    index.append(20, 200)
++
++    index.truncate_to(offset=15)
++    index.flush()
++    index.close()
++
++    reopened = OffsetIndex.open(path, base_offset=0)
++    assert reopened.entries == ((0, 0), (10, 100))
++    reopened.close()

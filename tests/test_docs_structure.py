@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 
-
 ENGLISH_CORE = (
     Path("docs/quickstart.md"),
     Path("docs/architecture.md"),

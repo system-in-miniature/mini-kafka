@@ -1,0 +1,5 @@
+tests/test_final_acceptance.py::test_domain_closure_survives_rebalance_failover_and_restart
+tests/test_final_acceptance.py::test_public_api_exports_semantic_types
+tests/log/test_retention.py
+tests/transaction/test_abort.py
+tests/transaction/test_visibility.py
