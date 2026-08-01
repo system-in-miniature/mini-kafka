@@ -1,0 +1,9 @@
+failure_files = ["tests/log/test_retention.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Prefix-only retention mechanism"
+title_zh = "仅删除前缀的 Retention机制"
+summary_en = "The manager evaluates age or total bytes from oldest to newest, stops at the first ineligible boundary, deletes selected files, and refreshes the partition view."
+summary_zh = "Manager 从旧到新评估 Age 或总字节，在第一个不符合边界处停止，删除选中的文件并刷新 Partition 视图。"
+files = ["src/minikafka/log/partition_log.py", "src/minikafka/log/retention.py", "src/minikafka/log/segment.py"]

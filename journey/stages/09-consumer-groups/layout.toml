@@ -1,0 +1,9 @@
+failure_files = ["tests/consumer/test_generation_fencing.py", "tests/consumer/test_group_rebalance.py", "tests/unit/test_assignor.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Consumer-group ownership mechanism"
+title_zh = "Consumer Group 所有权机制"
+summary_en = "Join or membership expiry recomputes assignments and increments generation; consumers refresh their view; commit checks member, generation, and partition ownership together."
+summary_zh = "Join 或成员过期会重算 Assignment 并增加 Generation；Consumer 刷新视图；Commit 同时检查 Member、Generation 与 Partition Ownership。"
+files = ["src/minikafka/config.py", "src/minikafka/consumer/assignor.py", "src/minikafka/consumer/consumer.py", "src/minikafka/consumer/group.py", "src/minikafka/core/cluster.py", "src/minikafka/errors.py"]

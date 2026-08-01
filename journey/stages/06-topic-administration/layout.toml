@@ -1,0 +1,18 @@
+failure_files = ["tests/test_direct_cluster.py", "tests/unit/test_metadata.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Topics and direct administration mechanism"
+title_zh = "Topic 与直接管理接口机制"
+summary_en = "Create-topic validates the request, assigns replicas deterministically, creates partition logs, persists metadata, and exposes the result through DirectAdmin."
+summary_zh = "Create Topic 校验请求、确定性分配 Replica、创建 Partition Log、持久化 Metadata，并通过 DirectAdmin 暴露结果。"
+files = ["src/minikafka/adapters/direct.py", "src/minikafka/config.py", "src/minikafka/core/cluster.py", "src/minikafka/core/metadata.py", "src/minikafka/errors.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package and project support"
+title_zh = "包与工程支撑"
+summary_en = "Keep package exports, dependencies, and the test environment reproducible."
+summary_zh = "保持包导出、依赖与测试环境可复现。"
+files = ["src/minikafka/adapters/__init__.py"]
+supporting = true

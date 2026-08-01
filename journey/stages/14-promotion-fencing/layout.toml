@@ -1,0 +1,9 @@
+failure_files = ["tests/reliability/test_lost_acked_write.py", "tests/replication/test_divergent_tail.py", "tests/replication/test_promotion.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Promotion and epoch fencing mechanism"
+title_zh = "晋升与 Epoch Fencing机制"
+summary_en = "Promotion validates eligibility, increments and persists the epoch, changes metadata, truncates replicas to the committed boundary, and fences requests carrying older epochs."
+summary_zh = "Promotion 校验资格、增加并持久化 Epoch、修改 Metadata、把 Replica 截到 Commit Boundary，并 Fencing 携带旧 Epoch 的请求。"
+files = ["src/minikafka/core/cluster.py", "src/minikafka/errors.py", "src/minikafka/replication/replica_set.py"]

@@ -1,0 +1,18 @@
+failure_files = ["tests/unit/test_offset_index.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Sparse offset lookup mechanism"
+title_zh = "稀疏 Offset 查找机制"
+summary_en = "Append enforces monotonic entries, lookup performs ordered floor search, and truncation keeps index state aligned with a shortened log."
+summary_zh = "Append 保证条目单调，Lookup 执行有序 Floor Search，Truncate 让索引与缩短后的日志保持一致。"
+files = ["src/minikafka/errors.py", "src/minikafka/log/index.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package and project support"
+title_zh = "包与工程支撑"
+summary_en = "Keep package exports, dependencies, and the test environment reproducible."
+summary_zh = "保持包导出、依赖与测试环境可复现。"
+files = ["src/minikafka/log/__init__.py"]
+supporting = true

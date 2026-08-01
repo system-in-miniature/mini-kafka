@@ -1,0 +1,18 @@
+failure_files = ["tests/unit/test_primitives.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Deterministic foundations mechanism"
+title_zh = "确定性基础机制"
+summary_en = "Callers read time through the Clock protocol, tests advance ManualClock explicitly, and configuration rejects invalid values before any log is opened."
+summary_zh = "调用方只通过 Clock 协议读取时间，测试显式推进 ManualClock，配置在日志打开前拒绝非法值。"
+files = ["src/minikafka/clock.py", "src/minikafka/config.py", "src/minikafka/errors.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package and project support"
+title_zh = "包与工程支撑"
+summary_en = "Keep package exports, dependencies, and the test environment reproducible."
+summary_zh = "保持包导出、依赖与测试环境可复现。"
+files = ["pyproject.toml", "src/minikafka/__init__.py", "uv.lock"]
+supporting = true

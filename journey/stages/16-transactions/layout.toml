@@ -1,0 +1,18 @@
+failure_files = ["tests/reliability/test_transaction_restart.py", "tests/transaction/test_abort.py", "tests/transaction/test_offsets.py", "tests/transaction/test_visibility.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Transactional records and offsets mechanism"
+title_zh = "事务化 Record 与 Offset机制"
+summary_en = "Begin fences old epochs, send appends transactional batches, prepare durably records intent, commit writes markers and offsets, and recovery completes or aborts incomplete work deterministically."
+summary_zh = "Begin Fencing 旧 Epoch；Send 追加事务 Batch；Prepare 持久记录意图；Commit 写 Marker 与 Offset；Recovery 确定性完成或中止未完成工作。"
+files = ["src/minikafka/consumer/offsets.py", "src/minikafka/core/cluster.py", "src/minikafka/transaction/journal.py", "src/minikafka/transaction/manager.py", "src/minikafka/transaction/model.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package and project support"
+title_zh = "包与工程支撑"
+summary_en = "Keep package exports, dependencies, and the test environment reproducible."
+summary_zh = "保持包导出、依赖与测试环境可复现。"
+files = ["src/minikafka/transaction/__init__.py"]
+supporting = true

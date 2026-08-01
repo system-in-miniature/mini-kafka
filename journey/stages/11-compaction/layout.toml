@@ -1,0 +1,9 @@
+failure_files = ["tests/log/test_compaction.py", "tests/reliability/test_compaction_swap.py", "tests/unit/test_batch_codec.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Keyed log compaction mechanism"
+title_zh = "按 Key 的日志压实机制"
+summary_en = "The compactor scans newest knowledge, rewrites retained records to temporary segments, fsyncs them, atomically swaps the range, and only then removes old files."
+summary_zh = "Compactor 扫描最新 Key 状态，把保留记录写入临时 Segment、Fsync、原子交换范围，之后才删除旧文件。"
+files = ["src/minikafka/core/batch.py", "src/minikafka/core/batch_codec.py", "src/minikafka/log/compaction.py", "src/minikafka/log/partition_log.py", "src/minikafka/log/segment.py"]

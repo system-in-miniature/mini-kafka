@@ -1,0 +1,18 @@
+failure_files = ["tests/replication/test_follower_fetch.py", "tests/replication/test_high_watermark.py", "tests/replication/test_isr.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "ISR and high watermark mechanism"
+title_zh = "ISR 与 High Watermark机制"
+summary_en = "Followers fetch from their LEO, append complete batches, report progress, and cause membership and HW to refresh; committed reads stop at HW."
+summary_zh = "Follower 从自身 LEO Fetch、追加完整 Batch、报告进度，并触发 Membership 与 HW 刷新；Committed Read 停在 HW。"
+files = ["src/minikafka/config.py", "src/minikafka/core/cluster.py", "src/minikafka/producer/producer.py", "src/minikafka/replication/model.py", "src/minikafka/replication/replica.py", "src/minikafka/replication/replica_set.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package and project support"
+title_zh = "包与工程支撑"
+summary_en = "Keep package exports, dependencies, and the test environment reproducible."
+summary_zh = "保持包导出、依赖与测试环境可复现。"
+files = ["src/minikafka/replication/__init__.py"]
+supporting = true

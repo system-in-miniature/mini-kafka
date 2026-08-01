@@ -1,0 +1,18 @@
+failure_files = ["tests/consumer/test_delivery_semantics.py", "tests/consumer/test_positions.py", "tests/reliability/test_offset_restart.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Consumer position and replay mechanism"
+title_zh = "Consumer Position 与重放机制"
+summary_en = "Poll advances local positions as records are returned; commit persists selected next offsets; a reopened consumer initializes from committed state or reset policy."
+summary_zh = "Poll 返回记录时推进本地 Position；Commit 持久化选定 Next Offset；重开 Consumer 从 Commit 或 Reset Policy 初始化。"
+files = ["src/minikafka/consumer/consumer.py", "src/minikafka/consumer/offsets.py", "src/minikafka/core/cluster.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package and project support"
+title_zh = "包与工程支撑"
+summary_en = "Keep package exports, dependencies, and the test environment reproducible."
+summary_zh = "保持包导出、依赖与测试环境可复现。"
+files = ["src/minikafka/consumer/__init__.py"]
+supporting = true

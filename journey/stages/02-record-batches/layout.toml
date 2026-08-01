@@ -1,0 +1,18 @@
+failure_files = ["tests/unit/test_batch_codec.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Binary-safe record batches mechanism"
+title_zh = "二进制安全 Record Batch机制"
+summary_en = "Encoding assigns a stable binary layout and checksum; decoding validates size, version, control/data invariants, and CRC before constructing domain objects."
+summary_zh = "编码建立稳定二进制布局和校验和；解码在构造领域对象前验证长度、版本、控制/数据约束与 CRC。"
+files = ["src/minikafka/core/batch.py", "src/minikafka/core/batch_codec.py", "src/minikafka/core/record.py", "src/minikafka/errors.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package and project support"
+title_zh = "包与工程支撑"
+summary_en = "Keep package exports, dependencies, and the test environment reproducible."
+summary_zh = "保持包导出、依赖与测试环境可复现。"
+files = ["src/minikafka/core/__init__.py"]
+supporting = true

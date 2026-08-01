@@ -1,0 +1,18 @@
+failure_files = ["tests/producer/test_batching.py", "tests/producer/test_ordering.py", "tests/unit/test_partitioner.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Partitioned producer batching mechanism"
+title_zh = "分区化 Producer Batching机制"
+summary_en = "Send chooses one partition, enqueues a pending record, and schedules flush when size or time closes the batch; acknowledgements resolve record futures in partition order."
+summary_zh = "Send 选定一个 Partition、排入 Pending Record，并在大小或时间关闭 Batch 时 Flush；Ack 按分区顺序完成 Record Future。"
+files = ["src/minikafka/core/cluster.py", "src/minikafka/errors.py", "src/minikafka/producer/accumulator.py", "src/minikafka/producer/partitioner.py", "src/minikafka/producer/producer.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package and project support"
+title_zh = "包与工程支撑"
+summary_en = "Keep package exports, dependencies, and the test environment reproducible."
+summary_zh = "保持包导出、依赖与测试环境可复现。"
+files = ["src/minikafka/producer/__init__.py"]
+supporting = true

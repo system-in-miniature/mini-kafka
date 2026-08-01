@@ -1,0 +1,9 @@
+failure_files = ["tests/producer/test_idempotence.py", "tests/reliability/test_producer_state_restart.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Idempotent producer retries mechanism"
+title_zh = "幂等 Producer 重试机制"
+summary_en = "Before append, the state manager compares epoch and sequence with durable per-partition state; after append, it records the batch result for replay across restart."
+summary_zh = "Append 前 State Manager 用持久的分区状态比较 Epoch 与 Sequence；Append 后记录 Batch Result，使重启后仍可复用。"
+files = ["src/minikafka/core/cluster.py", "src/minikafka/errors.py", "src/minikafka/producer/producer.py", "src/minikafka/producer/state.py", "src/minikafka/replication/replica_set.py"]

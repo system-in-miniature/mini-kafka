@@ -1,0 +1,9 @@
+failure_files = ["tests/adapters/test_direct_tcp_parity.py", "tests/adapters/test_json_tcp.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Thin JSON TCP adapter mechanism"
+title_zh = "轻量 JSON TCP Adapter机制"
+summary_en = "The server reads an exact frame length, validates request shape, calls existing cluster operations, and serializes results without owning storage or replication decisions."
+summary_zh = "Server 精确读取 Frame 长度、校验 Request Shape、调用已有 Cluster Operation，再序列化结果；它不拥有存储或复制决策。"
+files = ["src/minikafka/adapters/json_tcp.py", "src/minikafka/errors.py"]

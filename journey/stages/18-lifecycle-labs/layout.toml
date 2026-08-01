@@ -1,0 +1,18 @@
+failure_files = ["tests/reliability/test_background_failure.py", "tests/reliability/test_shutdown.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Lifecycle and failure labs mechanism"
+title_zh = "生命周期与失败实验机制"
+summary_en = "Cluster and producer close paths stop new work, flush pending records, await or cancel owned tasks, surface captured failures, and tolerate repeated close calls."
+summary_zh = "Cluster 与 Producer 的 Close Path 停止新工作、Flush Pending Record、等待或取消自有 Task、暴露捕获失败，并允许重复 Close。"
+files = ["src/minikafka/core/cluster.py", "src/minikafka/labs/leader_failure.py", "src/minikafka/labs/rebalance.py", "src/minikafka/lifecycle.py", "src/minikafka/producer/producer.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package and project support"
+title_zh = "包与工程支撑"
+summary_en = "Keep package exports, dependencies, and the test environment reproducible."
+summary_zh = "保持包导出、依赖与测试环境可复现。"
+files = ["src/minikafka/labs/__init__.py"]
+supporting = true

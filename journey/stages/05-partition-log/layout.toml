@@ -1,0 +1,9 @@
+failure_files = ["tests/log/test_partition_log.py", "tests/reliability/test_log_restart.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Segmented partition log mechanism"
+title_zh = "分段 Partition Log机制"
+summary_en = "Append rolls before a size limit would be exceeded; reads choose a candidate segment and scan batches; reopen orders files and recovers the active tail."
+summary_zh = "Append 在超过大小限制前 Roll；Read 选择候选 Segment 再扫描 Batch；重开时排序文件并恢复 Active Tail。"
+files = ["src/minikafka/config.py", "src/minikafka/log/partition_log.py"]

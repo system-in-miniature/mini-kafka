@@ -1,0 +1,9 @@
+failure_files = ["tests/reliability/test_lost_acked_write.py", "tests/replication/test_ack_modes.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Acknowledgement modes mechanism"
+title_zh = "确认模式机制"
+summary_en = "The replica set checks admission before append, tracks required acknowledgers, advances replicas, and fails the waiter if ISR loses a required member before completion."
+summary_zh = "Replica Set 在 Append 前检查准入、记录 Required Acknowledger、推进 Replica，并在完成前 ISR 丢失必需成员时让 Waiter 失败。"
+files = ["src/minikafka/errors.py", "src/minikafka/producer/producer.py", "src/minikafka/replication/replica_set.py"]

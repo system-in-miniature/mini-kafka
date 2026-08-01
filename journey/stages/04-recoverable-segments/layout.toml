@@ -1,0 +1,9 @@
+failure_files = ["tests/log/test_recovery.py", "tests/log/test_segment.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Recoverable log segments mechanism"
+title_zh = "可恢复日志段机制"
+summary_en = "Append writes encoded batches and periodically indexes offsets; reopen validates the durable prefix and reconstructs next-offset and byte-position state."
+summary_zh = "Append 写入编码 Batch 并周期性建立索引；重开时验证持久前缀并重建 Next Offset 与 Byte Position。"
+files = ["src/minikafka/core/record.py", "src/minikafka/errors.py", "src/minikafka/log/recovery.py", "src/minikafka/log/segment.py"]

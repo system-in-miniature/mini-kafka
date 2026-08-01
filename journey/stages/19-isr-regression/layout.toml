@@ -1,0 +1,9 @@
+failure_files = ["tests/replication/test_promotion.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "ISR rejoin regression mechanism"
+title_zh = "ISR Rejoin 回归机制"
+summary_en = "Membership refresh compares follower LEO with both lag policy and HW; only replicas at or beyond HW reenter the set used by acknowledgement and election."
+summary_zh = "Membership Refresh 同时比较 Follower LEO、Lag Policy 与 HW；只有到达 HW 的 Replica 才能重新进入 Ack 与 Election 集合。"
+files = ["src/minikafka/replication/replica_set.py"]

@@ -1,0 +1,18 @@
+failure_files = ["tests/log/test_retention.py", "tests/test_final_acceptance.py", "tests/test_sloc_report.py", "tests/transaction/test_abort.py", "tests/transaction/test_visibility.py"]
+
+[[blocks]]
+id = "mechanism"
+title_en = "Cross-mechanism domain closure mechanism"
+title_zh = "跨机制领域闭环机制"
+summary_en = "The cluster routes transactional appends through replicated acknowledgement, replica reads consult commit markers, retention advances one log-start boundary, and restart restores metadata, offsets, producer, and transaction state."
+summary_zh = "Cluster 让事务 Append 经过复制确认；Replica Read 查询 Commit Marker；Retention 推进唯一 Log Start Boundary；Restart 恢复 Metadata、Offset、Producer 与 Transaction State。"
+files = ["src/minikafka/consumer/group.py", "src/minikafka/core/cluster.py", "src/minikafka/labs/leader_failure.py", "src/minikafka/labs/rebalance.py", "src/minikafka/log/compaction.py", "src/minikafka/log/partition_log.py", "src/minikafka/log/retention.py", "src/minikafka/producer/state.py", "src/minikafka/replication/replica_set.py", "src/minikafka/transaction/manager.py"]
+
+[[blocks]]
+id = "supporting"
+title_en = "Package and project support"
+title_zh = "包与工程支撑"
+summary_en = "Keep package exports, dependencies, and the test environment reproducible."
+summary_zh = "保持包导出、依赖与测试环境可复现。"
+files = ["src/minikafka/__init__.py"]
+supporting = true
